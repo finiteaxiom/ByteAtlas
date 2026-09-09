@@ -1,0 +1,41 @@
+{
+  "name": "byteatlas",
+  "version": "0.1.0",
+  "private": true,
+  "description": "电脑世界探索器 — Windows 微缩城市沙盘",
+  "author": "ByteAtlas",
+  "license": "UNLICENSED",
+  "main": "out/main/index.js",
+  "engines": { "node": ">=24.15.0 <25", "npm": ">=11 <12" },
+  "packageManager": "npm@11.13.0",
+  "scripts": {
+    "setup:electron": "install-electron",
+    "dev": "electron-vite dev",
+    "start": "electron-vite preview",
+    "typecheck": "tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.web.json",
+    "test": "vitest run",
+    "build": "npm run typecheck && electron-vite build",
+    "pack": "npm run build && electron-builder --win --x64 --dir",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:dev": "node scripts/smoke.mjs --dev-server",
+    "smoke:packaged": "node scripts/smoke.mjs --packaged"
+  },
+  "dependencies": {
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "three": "0.185.1"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@types/three": "0.185.4",
+    "@vitejs/plugin-react": "5.2.0",
+    "electron": "44.2.0",
+    "electron-builder": "26.15.3",
+    "electron-vite": "5.0.0",
+    "typescript": "5.9.3",
+    "vite": "7.3.6",
+    "vitest": "3.2.7"
+  }
+}
