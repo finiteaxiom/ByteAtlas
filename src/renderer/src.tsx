@@ -1,3 +1,4 @@
+import { WorldHome } from './WorldHome';
 import { StrictMode, useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { HealthResult } from '../shared/contracts/desktop';
@@ -124,4 +125,4 @@ function App(): React.JSX.Element {
     </div><footer><span data-status={!health ? 'loading' : health.ok ? 'ready' : 'error'} role="status"><i />{health?.ok ? '本地索引已连接' : health ? health.error.message : '正在连接本地索引…'}</span><span>样例探索 · 阶段 1 <b>没有读取真实目录</b></span></footer>
   </div>;
 }
-createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>);
+createRoot(document.getElementById('root')!).render(<StrictMode><WorldHome Demo={App} /></StrictMode>);

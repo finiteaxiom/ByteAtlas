@@ -5,14 +5,32 @@ export class BackendHost {
   private child?: UtilityProcess;
   private health?: BackendHealth;
   private exited?: Promise<number>;
+  private sequence = 0;
+  private pending = new Map<number, {resolve:(value:unknown)=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+  call(request: unknown): Promise<unknown> {
+    if(!this.child || !this.health)return Promise.reject(Error('UNAVAILABLE'));
+    if(this.pending.size>=32)return Promise.reject(Error('BUSY'));
+    const id=++this.sequence;
+    return new Promise((resolve,reject)=>{
+      const timer=setTimeout(()=>{this.pending.delete(id);reject(Error('UNAVAILABLE'));},15000);
+      this.pending.set(id,{resolve,reject,timer});this.child!.postMessage({type:'catalog',id,request});
+    });
+  }
 
   start(entryPath: string, dataDirectory: string): Promise<BackendHealth> {
     if (this.child) return Promise.reject(new Error('BACKEND_ALREADY_STARTED'));
     const child = utilityProcess.fork(entryPath, [dataDirectory], { serviceName: 'ByteAtlas Index', stdio: 'ignore' });
     this.child = child;
+    child.on('message',(message:unknown)=>{
+      if(!isRecord(message)||message.type!=='reply'||typeof message.id!=='number')return;
+      const pending=this.pending.get(message.id);if(!pending)return;
+      clearTimeout(pending.timer);this.pending.delete(message.id);
+      if(typeof message.error==='string')pending.reject(Error(message.error));else pending.resolve(message.data);
+    });
     this.exited = new Promise((resolve) => child.once('exit', (code) => {
       this.child = undefined;
       this.health = undefined;
+      for(const item of this.pending.values()){clearTimeout(item.timer);item.reject(Error('UNAVAILABLE'));}this.pending.clear();
       resolve(code);
     }));
     return new Promise((resolve, reject) => {

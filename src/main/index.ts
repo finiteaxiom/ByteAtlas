@@ -1,3 +1,5 @@
+import { exerciseCatalog } from './catalog-smoke';
+import { registerCatalog } from './catalog-ipc';
 import { app, BrowserWindow, ipcMain, session } from 'electron';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { isAbsolute, join } from 'node:path';
@@ -5,9 +7,19 @@ import { pathToFileURL } from 'node:url';
 import { BackendHost } from './backend-host';
 import { isTrustedRendererUrl } from './trusted-renderer';
 import { exerciseCity } from './city-smoke';
+import { benchmark } from './benchmark';
 import { captureSmoke } from './capture-smoke';
 import { HEALTH_CHANNEL, isEmptyRequest, type HealthResult } from '../shared/contracts/desktop';
 
+const qaDirectory = process.argv.find(arg => arg.startsWith('--qa-root='))?.slice('--qa-root='.length);
+const benchmarkDirectory = process.argv.find(arg => arg.startsWith('--benchmark-root='))?.slice('--benchmark-root='.length);
+const isolatedDirectory = qaDirectory ?? benchmarkDirectory;
+if (isolatedDirectory) {
+  if (!isAbsolute(isolatedDirectory)) throw new Error('INVALID_BENCHMARK_ROOT');
+  mkdirSync(isolatedDirectory, { recursive: true });
+  app.setPath('userData', join(isolatedDirectory, 'profile'));
+  app.setPath('sessionData', join(isolatedDirectory, 'session'));
+}
 const smokeDirectory = process.argv.find((arg) => arg.startsWith('--smoke-root='))?.slice('--smoke-root='.length);
 if (smokeDirectory) {
   // Deterministic software rendering for hidden CI screenshots only.
@@ -60,7 +72,10 @@ async function createWindow(): Promise<BrowserWindow> {
 }
 
 async function runSmoke(result: BrowserWindow): Promise<void> {
+  await captureSmoke(result.webContents, join(smokeDirectory!, 'home.png'));
   const evidence = await result.webContents.executeJavaScript(`(async () => {
+    document.querySelector('[data-demo]')?.click();
+    await new Promise(r=>setTimeout(r,100));
     const health = await window.byteAtlas.getHealth();
     const invalid = await window.byteAtlas.getHealth({ path: 'forbidden' });
     const isolation = { require: typeof window.require, process: typeof window.process, exposed: Object.keys(window.byteAtlas) };
@@ -71,7 +86,7 @@ async function runSmoke(result: BrowserWindow): Promise<void> {
   })()`);
   const cityEvidence = await exerciseCity(result.webContents);
   const preferences = { ...evidence.runtime, nodeIntegration: evidence.isolation.require !== 'undefined' };
-  const backendExitCode = await backend.stop();
+  const backendExitCode = 0;
   const report = {
     ...evidence, city: cityEvidence, backendExitCode, packaged: app.isPackaged, screenshotMode: 'software-offscreen',
     versions: { electron: process.versions.electron, node: process.versions.node, chrome: process.versions.chrome },
@@ -96,9 +111,12 @@ async function runSmoke(result: BrowserWindow): Promise<void> {
     await new Promise(r=>setTimeout(r,200));
   })()`);
   await captureSmoke(result.webContents, join(smokeDirectory!, 'revealed.png'));
-  const passed = evidence.health?.ok && evidence.uiReady && evidence.invalid?.error?.code === 'BAD_REQUEST' &&
+  const catalogEvidence = await exerciseCatalog(result.webContents, backend, smokeDirectory!);
+  const actualExit = await backend.stop();
+  writeFileSync(join(smokeDirectory!, 'report.json'), JSON.stringify({...report, catalog:catalogEvidence, backendExitCode:actualExit},null,2));
+  const passed = actualExit === 0 && evidence.health?.ok && evidence.uiReady && evidence.invalid?.error?.code === 'BAD_REQUEST' &&
     evidence.isolation.require === 'undefined' && evidence.isolation.process === 'undefined' &&
-    evidence.isolation.exposed.join(',') === 'getHealth,getRuntimeInfo' && backendExitCode === 0 &&
+    evidence.isolation.exposed.join(',') === 'catalog,getHealth,getRuntimeInfo' && backendExitCode === 0 &&
     preferences.contextIsolation && preferences.sandbox && !preferences.nodeIntegration;
   shuttingDown = true;
   app.exit(passed ? 0 : 1);
@@ -118,11 +136,14 @@ void app.whenReady().then(async () => {
   try { await backend.start(join(__dirname, 'backend.js'), join(app.getPath('userData'), 'index')); }
   catch { console.error('ByteAtlas backend unavailable; source files have not been scanned.'); }
   registerHealth();
+  registerCatalog(backend, () => window, rendererUrl);
   const result = await createWindow();
+  if (qaDirectory) { result.show(); result.focus(); }
   if (smokeDirectory) await runSmoke(result);
+  if (benchmarkDirectory) { await benchmark(result, benchmarkDirectory); await backend.stop(); shuttingDown = true; app.exit(0); }
 }).catch(async (error: unknown) => {
   await backend.stop();
-  if (smokeDirectory) writeFileSync(join(smokeDirectory, 'error.txt'), error instanceof Error ? error.stack ?? error.message : String(error));
+  if (smokeDirectory || benchmarkDirectory || qaDirectory) writeFileSync(join((smokeDirectory ?? benchmarkDirectory ?? qaDirectory)!, 'error.txt'), error instanceof Error ? error.stack ?? error.message : String(error));
   shuttingDown = true;
   app.exit(1);
 });

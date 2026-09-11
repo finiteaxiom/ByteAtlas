@@ -41,7 +41,7 @@ export class CityRenderer {
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
     this.renderer.toneMappingExposure = 1.15;
     host.append(this.renderer.domElement);
-    this.renderer.domElement.setAttribute('aria-label', '可平移旋转缩放的样例城市沙盘');
+    this.renderer.domElement.setAttribute('aria-label', '可平移旋转缩放的城市沙盘');
     this.camera.position.set(55, 64, 65);
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
@@ -150,7 +150,7 @@ export class CityRenderer {
       button.dataset.objectId = id;
       const name = document.createElement('span'); name.textContent = object.name;
       const subtitle = document.createElement('small');
-      subtitle.textContent = object.kind === 'group' ? `${object.count} 个文件 · 聚合` : object.kind === 'directory' ? `${object.repository ? 'Git 工业园 · ' : ''}${object.count} 个文件` : '文件建筑';
+      subtitle.textContent = object.statusLabel ?? (object.kind === 'group' ? `${object.count} 个文件 · 聚合` : object.kind === 'directory' ? `${object.repository ? 'Git 工业园 · ' : ''}${object.count} 个文件` : '文件建筑');
       button.append(name, subtitle);
       button.onclick = () => this.onSelect(id);
       button.ondblclick = () => { if (object.kind === 'directory') this.onEnter(id); };

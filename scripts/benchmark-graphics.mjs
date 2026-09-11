@@ -1,0 +1,10 @@
+import { spawn } from 'node:child_process';
+import { mkdtemp, mkdir, readFile } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import { createRequire } from 'node:module';
+const require=createRequire(import.meta.url);
+await mkdir(resolve('.artifacts'),{recursive:true});
+const root=await mkdtemp(resolve('.artifacts/graphics-benchmark-'));
+const env={...process.env};delete env.ELECTRON_RUN_AS_NODE;
+const child=spawn(require('electron'),['.',`--benchmark-root=${root}`],{windowsHide:true,stdio:'inherit',env});
+child.on('exit',async code=>{if(code!==0){process.exitCode=1;return;}console.log(await readFile(join(root,'benchmark.json'),'utf8'));console.log('Evidence:',root);});

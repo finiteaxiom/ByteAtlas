@@ -12,6 +12,7 @@ export type HealthResult =
   | { ok: false; error: { code: 'BAD_REQUEST' | 'UNAVAILABLE'; message: string; retryable: boolean } };
 
 export interface DesktopApi {
+  catalog(request: import('./catalog').CatalogRequest): Promise<import('./catalog').CatalogResult>;
   getHealth(): Promise<HealthResult>;
   getRuntimeInfo(): { contextIsolation: boolean; sandbox: boolean };
 }
@@ -21,7 +22,7 @@ export function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 export function isBackendHealth(value: unknown): value is BackendHealth {
-  return isRecord(value) && value.schemaVersion === 1 &&
+  return isRecord(value) && value.schemaVersion === 2 &&
     typeof value.sqliteVersion === 'string' && value.sqliteVersion.length < 64 &&
     Number.isSafeInteger(value.bootCount) && (value.bootCount as number) > 0 && value.integrity === 'ok';
 }

@@ -17,10 +17,10 @@ afterEach(() => {
 });
 
 describe('IndexStore migration and persistence', () => {
-  it('creates version 1 and preserves committed state after reopening', () => {
+  it('creates version 2 and preserves committed state after reopening', () => {
     const path = databasePath();
     const first = new IndexStore(path);
-    try { expect(first.recordBoot()).toMatchObject({ schemaVersion: 1, bootCount: 1, integrity: 'ok' }); }
+    try { expect(first.recordBoot()).toMatchObject({ schemaVersion: 2, bootCount: 1, integrity: 'ok' }); }
     finally { first.close(); }
     const second = new IndexStore(path);
     try { expect(second.recordBoot().bootCount).toBe(2); }

@@ -13,7 +13,7 @@ describe('IPC runtime boundaries', () => {
     }
   });
   it('does not promote malformed backend messages to ready', () => {
-    const valid = { schemaVersion: 1, sqliteVersion: '3.50.0', bootCount: 1, integrity: 'ok' };
+    const valid = { schemaVersion: 2, sqliteVersion: '3.50.0', bootCount: 1, integrity: 'ok' };
     expect(isBackendHealth(valid)).toBe(true);
     for (const invalid of [null, { ...valid, bootCount: NaN }, { ...valid, bootCount: -1 }, { ...valid, schemaVersion: 99 }, { ...valid, integrity: 'bad' }]) {
       expect(isBackendHealth(invalid)).toBe(false);

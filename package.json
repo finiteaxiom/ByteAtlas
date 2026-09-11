@@ -6,7 +6,10 @@
   "author": "ByteAtlas",
   "license": "UNLICENSED",
   "main": "out/main/index.js",
-  "engines": { "node": ">=24.15.0 <25", "npm": ">=11 <12" },
+  "engines": {
+    "node": ">=24.15.0 <25",
+    "npm": ">=11 <12"
+  },
   "packageManager": "npm@11.13.0",
   "scripts": {
     "setup:electron": "install-electron",
@@ -18,7 +21,9 @@
     "pack": "npm run build && electron-builder --win --x64 --dir",
     "smoke": "node scripts/smoke.mjs",
     "smoke:dev": "node scripts/smoke.mjs --dev-server",
-    "smoke:packaged": "node scripts/smoke.mjs --packaged"
+    "smoke:packaged": "node scripts/smoke.mjs --packaged",
+    "benchmark:catalog": "node scripts/benchmark-catalog.mjs",
+    "benchmark:graphics": "node scripts/benchmark-graphics.mjs"
   },
   "dependencies": {
     "react": "19.2.8",

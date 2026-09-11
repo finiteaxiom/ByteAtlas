@@ -2,7 +2,11 @@
 
 ## 状态与技术基线
 
-本文件为完整实现蓝图，目前已有阶段 0 骨架和阶段 1 固定样例沙盘，真实文件系统业务尚未实现。已确认 Electron + TypeScript + React + Three.js + SQLite，首版 Windows。实际依赖由 package.json 与 package-lock.json 锁定，验证记录见 [工程准备记录](Engineering-Readiness.md) 与 [阶段 1 记录](Stage-1.md)。
+本文件为完整实现蓝图，目前已实现阶段 0–2。实际范围见 [阶段 2 记录](Stage-2.md)，不能把下文监听、活动和通用接口草案视为已有能力。技术基线为 Electron + TypeScript + React + Three.js + SQLite，首版 Windows，依赖由 package.json 与 package-lock.json 锁定。
+
+阶段 2 的 Scanner 在 Utility Process 中单任务异步扫描，64 条批量事务、数据库目录队列、两轮枚举核对。IndexStore 拥有 schema 2、精确容量、查询和持久化槽位；Main 的 catalog-ipc 只处理选择器令牌、来源校验与系统操作。Renderer 使用 WorldHome / RealWorld 和既有 CityRenderer，每页最多 60 个普通对象，成员与搜索均分页。现阶段通过有界轮询获取进度，不发送蓝图中的变更事件流。
+
+真实布局按首次发现顺序分配持久槽位，之后新增填空、删除留空；分组使用初始相对路径哈希和类型，已保存的分组键保持稳定。不同新建世界的枚举顺序不保证一致，不宣称跨新索引坐标完全一致。阶段 1 的确定性样例算法仍单独保留。真实布局版本与数据库版本分离。
 
 阶段 0 选择内置 node:sqlite，由后台 IndexStore 封装；构建使用 electron-vite，打包使用 electron-builder。监听暂定以 node:fs.watch 配合核对队列作为首个验证候选，尚未实现，也未经大目录负载验证。无需为了这些可替换依赖改变模块边界。
 
@@ -38,7 +42,7 @@ Renderer 不直接使用 Node/fs，也不接收通用执行命令接口；启用
 
 ## 数据模型
 
-阶段 1 的 `src/shared/world/model.ts` 提供纯样例数据结构和布局算法；`src/renderer/demo/fixture.ts` 是固定数据适配器，不是文件系统采集器。当前小样例由 Renderer 组织调用，布局保存于样例专用 localStorage 键；这是进入真实目录阶段前的验证实现。阶段 2 必须由后台 LayoutService/IndexStore 承接真实索引与布局，Renderer 不得复用该样例路径处理全盘数据。
+阶段 1 的 `src/shared/world/model.ts` 提供纯样例数据结构和布局算法；`src/renderer/demo/fixture.ts` 是固定数据适配器，不是文件系统采集器。小样例由 Renderer 组织调用并保存于样例专用 localStorage 键。阶段 2 已由后台 IndexStore 承接真实索引与布局，Renderer 不复用样例全量遍历处理磁盘数据。
 
 数据库主键使用应用生成的稳定 ID，不以路径作为永久主键。路径用于定位，Windows 文件身份信息在可可靠获取时辅助识别改名；路径匹配只作回退。无法确认改名时按删除与新增处理。
 
@@ -63,7 +67,7 @@ SQLite schema 具有独立迁移版本，布局具有独立算法版本。布局
 
 ## 接口契约
 
-Renderer 通过 preload 的具体方法调用；下表是契约草案，不是已实现 API。
+Renderer 通过 preload 的 `catalog` 判别联合请求调用当前业务：choose/create/worlds/scan/remove/scene/search/members/resolve/saveView/system，精确定义和校验见 `src/shared/contracts/catalog.ts`。下面完整方法表仍是契约草案，不是已实现 API。
 
 | 请求 | 主要输入 | 输出/行为 |
 | --- | --- | --- |

@@ -42,9 +42,10 @@ async function runOnce() {
   assert.equal(report.backendExitCode, 0);
   assert.equal(report.uiReady, true);
   assert.equal(report.city.passed, true);
+  assert.equal(report.catalog.passed, true);
   assert.deepEqual(report.security, { contextIsolation: true, sandbox: true, nodeIntegration: false });
   assert.equal(report.invalid.error.code, 'BAD_REQUEST');
-  assert.deepEqual(report.isolation, { require: 'undefined', process: 'undefined', exposed: ['getHealth', 'getRuntimeInfo'] });
+  assert.deepEqual(report.isolation, { require: 'undefined', process: 'undefined', exposed: ['catalog', 'getHealth', 'getRuntimeInfo'] });
   return report;
 }
 
@@ -52,4 +53,5 @@ const first = await runOnce();
 const second = await runOnce();
 assert.equal(first.health.data.bootCount, 1);
 assert.equal(second.health.data.bootCount, 2);
+assert.equal(second.catalog.reopenedSavedView, true);
 console.log(JSON.stringify({ passed: true, packaged, devServer, persistedBootCounts: [1, 2], evidence: directory, versions: second.versions }, null, 2));

@@ -10,6 +10,7 @@ export interface Entry {
   repository?: boolean;
 }
 export interface CityObject {
+  statusLabel?: string;
   id: string;
   kind: 'directory' | 'file' | 'group';
   name: string;

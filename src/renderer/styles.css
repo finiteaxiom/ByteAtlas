@@ -616,3 +616,10 @@ footer b {
 
 
 
+.world-home {max-width:1100px;margin:auto;padding:32px 44px;height:100vh;overflow:auto}
+.home-intro {padding:60px 0 28px}.home-intro h1 {font-size:42px;line-height:1.45;letter-spacing:-1px;margin:18px 0}.home-intro p {line-height:1.9;color:#728071}.home-intro button {margin:16px 16px 0 0;padding:14px 22px;border-radius:9px;background:#e8eddf}.home-intro button.primary {background:#637f58;color:white}
+.root-confirm {padding:22px;border:1px solid #d6ddc8;background:#f0f1e6;border-radius:12px;max-width:760px;line-height:1.8}.root-confirm button {margin:14px 14px 0 0}
+.saved-worlds article {display:flex;border-bottom:1px solid #d9dece;align-items:center;padding:10px 0;gap:20px}.saved-worlds article>button:first-child {flex:1;text-align:left;display:grid;gap:7px;padding:12px;min-width:0}.saved-worlds article span{overflow-wrap:anywhere;color:#758371}.saved-worlds small,.privacy-note{color:#89917e}.privacy-note{margin-top:25px}
+.leave-demo {position:absolute;right:20px;bottom:38px;background:#f7f3eb;border:1px solid #cad0bb;border-radius:8px;padding:10px;z-index:10}
+.system-actions{display:grid;gap:8px;margin-top:12px}.system-actions button{padding:10px;border:1px solid #d9dece;border-radius:7px}.catalog-message{position:absolute;bottom:45px;left:25%;right:25%;padding:15px;background:#fff4d9;border:1px solid #dac298;border-radius:10px;z-index:20}.catalog-message button{float:right}
+.members input {width:100%;padding:8px;background:#fffdf6;border:1px solid #d9dece;border-radius:6px}.path-end{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:35%} footer button{border:1px solid #d9dece;border-radius:5px;margin-left:8px;padding:3px 8px}
