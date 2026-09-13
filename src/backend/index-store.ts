@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { basename } from 'node:path';
+import { activityScore } from '../shared/world/activity';
 import { hash, type FileType, type PlacedObject } from '../shared/world/model';
 import type { CatalogEntry, World, SavedView, ScenePage, EntryPage, ScanState } from '../shared/contracts/catalog';
 import { DatabaseSync } from 'node:sqlite';
@@ -22,7 +23,7 @@ export class IndexStore {
         try {
             this.db.exec('PRAGMA busy_timeout = 3000; PRAGMA foreign_keys = ON;');
             const version = Number(this.statement('PRAGMA user_version').get()?.user_version);
-            if (version > 2)
+            if (version > 3)
                 throw new Error('INDEX_VERSION_UNSUPPORTED');
             if (version === 0) {
                 this.db.exec(`
@@ -55,7 +56,7 @@ export class IndexStore {
             if (integrity !== 'ok')
                 throw new Error('INDEX_INTEGRITY_FAILED');
             return {
-                schemaVersion: 2,
+                schemaVersion: 3,
                 sqliteVersion: String(this.statement('SELECT sqlite_version() AS version').get()?.version),
                 bootCount: count + 1,
                 integrity
@@ -88,9 +89,18 @@ export class IndexStore {
             this.db.exec("ALTER TABLE worlds ADD COLUMN excludedPaths TEXT NOT NULL DEFAULT '[]'");
         this.db.exec('CREATE INDEX IF NOT EXISTS entry_search ON entries(worldId,live,id);');
         this.db.exec('CREATE TABLE IF NOT EXISTS group_slots(directoryId TEXT NOT NULL,groupKey TEXT NOT NULL,slot INTEGER NOT NULL,PRIMARY KEY(directoryId,groupKey)) STRICT;');
+        if (Number(this.statement('PRAGMA user_version').get()?.user_version) < 3) {
+            this.db.exec(`BEGIN IMMEDIATE;
+              ALTER TABLE entries ADD COLUMN observedAt TEXT;
+              ALTER TABLE entries ADD COLUMN changeKind TEXT;
+              ALTER TABLE entries ADD COLUMN repository INTEGER NOT NULL DEFAULT 0;
+              ALTER TABLE worlds ADD COLUMN monitor TEXT NOT NULL DEFAULT 'stopped';
+              PRAGMA user_version=3; COMMIT;`);
+        }
+        this.db.exec("UPDATE worlds SET monitor='stopped'; UPDATE entries SET observedAt=NULL,changeKind=NULL WHERE observedAt < datetime('now','-30 days')");
         this.db.aggregate('logical_sum', { start: '0', step: (sum, value) => (BigInt(String(sum)) + BigInt(String(value))).toString() });
     }
-    private rowEntry(row: unknown): CatalogEntry { const e = row as CatalogEntry; return { ...e, link: Boolean(e.link) }; }
+    private rowEntry(row: unknown): CatalogEntry { const e = row as CatalogEntry; return { ...e, link: Boolean(e.link), repository: Boolean(e.repository) }; }
     private rowWorld(row: unknown): World { const w = row as unknown as Omit<World, 'view' | 'excludedPaths'> & {
         view: string | null;
         excludedPaths: string;
@@ -146,14 +156,80 @@ export class IndexStore {
         this.statement(`INSERT INTO entries(id,worldId,parentId,relativePath,name,kind,bytes,modifiedAt,fileType,link,state,fileCount,directoryCount,slot,groupKey,seen)
       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bytes=excluded.bytes,modifiedAt=excluded.modifiedAt,fileType=excluded.fileType,seen=excluded.seen,groupKey=excluded.groupKey`).run(id, worldId, parentId, input.relativePath, input.name, input.kind, bytes, input.modifiedAt, input.kind === 'directory' ? (old?.fileType ?? 'other') : input.fileType, Number(input.link), input.kind === 'directory' ? 'unknown' : 'complete', fileCount, directoryCount, slot, groupKey, generation);
         this.ancestorsDelta(worldId, parentId, BigInt(bytes) - BigInt(old?.bytes ?? '0'), fileCount - (old?.fileCount ?? 0), old ? 0 : input.kind === 'directory' ? 1 : 0);
+        if (this.observing.has(worldId) && input.kind === 'file' && (!old || old.bytes!==bytes || old.modifiedAt!==input.modifiedAt)) {
+            this.markObserved(worldId,id,old?'modified':'added');
+        }
         if (input.kind === 'file' && (!old || old.fileType !== input.fileType)) {
             if (old)
                 this.changeTypes(worldId, parentId, old.fileType, -1);
             this.changeTypes(worldId, parentId, input.fileType, 1);
         }
     }
+    // Scanner batches always share a parent directory.  Keep their durable entry
+    // writes per item, but coalesce ancestor and type aggregates so a large flat
+    // directory does not repeatedly rewrite the same directory and root rows.
+    upsertBatch(worldId: string, parentId: string | null, inputs: Pick<CatalogEntry, 'name' | 'relativePath' | 'kind' | 'bytes' | 'modifiedAt' | 'fileType' | 'link'>[], generation: number): void {
+        const pending: Array<{
+            input: Pick<CatalogEntry, 'name' | 'relativePath' | 'kind' | 'bytes' | 'modifiedAt' | 'fileType' | 'link'>;
+            old?: CatalogEntry;
+            id: string;
+            slot?: number;
+            bytes: string;
+            fileCount: number;
+            directoryCount: number;
+            groupKey: string;
+        }> = [];
+        for (const input of inputs) {
+            const row = this.statement('SELECT * FROM entries WHERE worldId=? AND relativePath=? AND live=1').get(worldId, input.relativePath);
+            let old = row ? this.rowEntry(row) : undefined;
+            if (old && (old.kind !== input.kind || old.link !== input.link)) {
+                this.removeEntry(worldId, old.id);
+                old = undefined;
+            }
+            pending.push({
+                input,
+                old,
+                id: old?.id ?? randomUUID(),
+                bytes: input.kind === 'directory' ? (old?.bytes ?? '0') : input.bytes,
+                fileCount: input.kind === 'file' ? 1 : old?.fileCount ?? 0,
+                directoryCount: old?.directoryCount ?? 0,
+                groupKey: old?.groupKey ?? (input.kind === 'file' ? `${input.fileType}:${hash(input.relativePath) % 6}` : '')
+            });
+        }
+        const fresh = pending.filter(entry => !entry.old);
+        const slots = this.allocateSlots(worldId, parentId, fresh.length);
+        for (const [index, entry] of fresh.entries())
+            entry.slot = slots[index];
+        let bytesDelta = 0n, fileDelta = 0, directoryDelta = 0;
+        const typeDeltas = new Map<FileType, number>();
+        const addType = (type: FileType, delta: number): void => {
+            typeDeltas.set(type, (typeDeltas.get(type) ?? 0) + delta);
+        };
+        for (const entry of pending) {
+            const { input, old } = entry;
+            const slot = old?.slot ?? entry.slot!;
+            this.statement(`INSERT INTO entries(id,worldId,parentId,relativePath,name,kind,bytes,modifiedAt,fileType,link,state,fileCount,directoryCount,slot,groupKey,seen)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET bytes=excluded.bytes,modifiedAt=excluded.modifiedAt,fileType=excluded.fileType,seen=excluded.seen,groupKey=excluded.groupKey`).run(entry.id, worldId, parentId, input.relativePath, input.name, input.kind, entry.bytes, input.modifiedAt, input.kind === 'directory' ? (old?.fileType ?? 'other') : input.fileType, Number(input.link), input.kind === 'directory' ? 'unknown' : 'complete', entry.fileCount, entry.directoryCount, slot, entry.groupKey, generation);
+            bytesDelta += BigInt(entry.bytes) - BigInt(old?.bytes ?? '0');
+            fileDelta += entry.fileCount - (old?.fileCount ?? 0);
+            directoryDelta += old ? 0 : input.kind === 'directory' ? 1 : 0;
+            if (this.observing.has(worldId) && input.kind === 'file' && (!old || old.bytes !== entry.bytes || old.modifiedAt !== input.modifiedAt))
+                this.markObserved(worldId, entry.id, old ? 'modified' : 'added');
+            if (input.kind === 'file' && (!old || old.fileType !== input.fileType)) {
+                if (old)
+                    addType(old.fileType, -1);
+                addType(input.fileType, 1);
+            }
+        }
+        if (bytesDelta !== 0n || fileDelta !== 0 || directoryDelta !== 0)
+            this.ancestorsDelta(worldId, parentId, bytesDelta, fileDelta, directoryDelta);
+        for (const [type, delta] of typeDeltas)
+            if (delta)
+                this.changeTypes(worldId, parentId, type, delta);
+    }
     removeEntry(worldId: string, id: string): void {
         const old = this.entry(worldId, id);
+        if(this.observing.has(worldId)) this.markObserved(worldId,id,'removed');
         this.ancestorsDelta(worldId, old.parentId, -BigInt(old.bytes), -old.fileCount, -old.directoryCount - (old.kind === 'directory' ? 1 : 0));
         if (old.kind === 'file')
             this.changeTypes(worldId, old.parentId, old.fileType, -1);
@@ -175,6 +251,25 @@ export class IndexStore {
         this.statement('INSERT OR IGNORE INTO slot_counters SELECT ?,COALESCE(MAX(slot),-1)+1 FROM entries WHERE worldId=? AND parentId=? AND live=1').run(parentId, worldId, parentId);
         return Number(this.statement('UPDATE slot_counters SET nextSlot=nextSlot+1 WHERE parentId=? RETURNING nextSlot-1 AS slot').get(parentId)?.slot);
     }
+    private allocateSlots(worldId: string, parentId: string | null, count: number): number[] {
+        if (!parentId)
+            return Array(count).fill(0);
+        const result: number[] = [];
+        const free = this.statement('SELECT slot FROM free_slots WHERE parentId=? ORDER BY slot LIMIT ?').all(parentId, count);
+        for (const row of free) {
+            const slot = Number(row.slot);
+            this.statement('DELETE FROM free_slots WHERE parentId=? AND slot=?').run(parentId, slot);
+            result.push(slot);
+        }
+        const remaining = count - result.length;
+        if (!remaining)
+            return result;
+        this.statement('INSERT OR IGNORE INTO slot_counters SELECT ?,COALESCE(MAX(slot),-1)+1 FROM entries WHERE worldId=? AND parentId=? AND live=1').run(parentId, worldId, parentId);
+        const start = Number(this.statement('UPDATE slot_counters SET nextSlot=nextSlot+? WHERE parentId=? RETURNING nextSlot-? AS slot').get(remaining, parentId, remaining)?.slot);
+        for (let offset = 0; offset < remaining; offset++)
+            result.push(start + offset);
+        return result;
+    }
     private changeTypes(worldId: string, parentId: string | null, type: string, delta: number): void {
         let depth = 0;
         while (parentId && depth++ < 512) {
@@ -184,6 +279,22 @@ export class IndexStore {
             this.statement('UPDATE entries SET fileType=? WHERE id=?').run(dominant, parentId);
             parentId = parent.parentId;
         }
+    }
+    private observing = new Set<string>();
+    private markObserved(worldId: string,id: string,kind: string): void {
+        const at=new Date().toISOString();
+        this.statement('UPDATE entries SET observedAt=?,changeKind=? WHERE id=?').run(at,kind,id);
+        for(const ancestor of this.ancestors(worldId,id).slice(0,-1))this.statement("UPDATE entries SET observedAt=?,changeKind='modified' WHERE id=?").run(at,ancestor.id);
+    }
+    observe(worldId: string, enabled: boolean): void { if (enabled) this.observing.add(worldId); else this.observing.delete(worldId); }
+    monitorState(worldId: string, state: World['monitor']): void { this.statement('UPDATE worlds SET monitor=?,revision=revision+1 WHERE id=? AND monitor<>?').run(state, worldId, state); }
+    watchDirectories(worldId: string): CatalogEntry[] { return this.statement("SELECT * FROM entries WHERE worldId=? AND live=1 AND kind='directory' AND link=0 ORDER BY length(relativePath),id LIMIT 256").all(worldId).map(r=>this.rowEntry(r)); }
+    selective(worldId: string, ids: string[]): number {
+        const generation=this.begin(worldId);
+        this.statement("UPDATE entries SET scanned=? WHERE worldId=? AND kind='directory' AND live=1").run(generation,worldId);
+        for(const id of ids) this.statement('UPDATE entries SET scanned=? WHERE worldId=? AND id=? AND live=1').run(generation-1,worldId,id);
+        this.statement("UPDATE worlds SET errors=(SELECT COUNT(*) FROM entries WHERE worldId=? AND live=1 AND kind='directory' AND state='unavailable' AND scanned=?) WHERE id=?").run(worldId,generation,worldId);
+        return generation;
     }
     setState(worldId: string, state: ScanState): void { this.statement('UPDATE worlds SET state=?,revision=revision+1 WHERE id=?').run(state, worldId); }
     begin(worldId: string): number {
@@ -201,6 +312,7 @@ export class IndexStore {
     batch(worldId: string, count: number): void { this.statement('UPDATE worlds SET discovered=discovered+?,revision=revision+1 WHERE id=?').run(count, worldId); }
     finishDirectory(worldId: string, id: string, generation: number, success: boolean): void {
         this.transaction(() => {
+            if(success) this.statement("UPDATE entries SET repository=EXISTS(SELECT 1 FROM entries marker WHERE marker.parentId=? AND marker.name='.git' AND marker.live=1 AND marker.link=0) WHERE id=?").run(id,id);
             if (!success)
                 this.statement('UPDATE worlds SET errors=errors+1 WHERE id=?').run(worldId);
             this.statement('UPDATE entries SET state=?,scanned=? WHERE id=?').run(success ? 'complete' : 'unavailable', generation, id);
@@ -242,16 +354,16 @@ export class IndexStore {
         const grouped = this.grouped(directoryId);
         const rows = this.statement(`SELECT * FROM entries WHERE worldId=? AND parentId=? AND live=1 ${grouped ? "AND kind='directory'" : ''} AND slot>=? AND slot<? ORDER BY slot LIMIT 60`).all(worldId, directoryId, (page - 1) * 60, page * 60);
         const count = Number(this.statement(`SELECT COALESCE(MAX(slot),-1)+1 AS n FROM entries WHERE worldId=? AND parentId=? AND live=1 ${grouped ? "AND kind='directory'" : ''}`).get(worldId, directoryId)?.n);
-        const objects: PlacedObject[] = rows.map((r, i) => { const e = this.rowEntry(r); return { id: e.id, kind: e.kind, name: e.link ? e.name + ' ↗ 链接' : e.name, statusLabel: e.kind === 'directory' ? (e.state === 'unknown' ? '? 尚未扫描' : e.state === 'unavailable' ? '! 无法访问' : world.state !== 'complete' || world.errors ? '◐ 统计尚不完整' : undefined) : e.link ? '↗ 链接 · 不跟随' : undefined, fileType: e.fileType, members: [e.id], bytes: e.bytes, repository: false, count: e.fileCount, x: (e.slot % 3 - 1) * 17, z: Math.floor(e.slot % 60 / 3) * 16 }; });
+        const objects: PlacedObject[] = rows.map((r, i) => { const e = this.rowEntry(r); return { id: e.id, kind: e.kind, name: e.link ? e.name + ' ↗ 链接' : e.name, statusLabel: e.kind === 'directory' ? (e.state === 'unknown' ? '? 尚未扫描' : e.state === 'unavailable' ? '! 无法访问' : world.state !== 'complete' || world.errors ? '◐ 统计尚不完整' : undefined) : e.link ? '↗ 链接 · 不跟随' : undefined, fileType: e.fileType, members: [e.id], bytes: e.bytes, repository: Boolean(e.repository), activity: activityScore(e.observedAt??e.modifiedAt,e.relativePath), count: e.fileCount, x: (e.slot % 3 - 1) * 17, z: Math.floor(e.slot % 60 / 3) * 16 }; });
         // A fixed group page follows directory pages. Group members never cross hash buckets.
         const groupPage = 0;
         if (grouped && page === groupPage) {
-            const groups = this.statement("SELECT groupKey,fileType,COUNT(*) AS n,logical_sum(bytes) AS bytes FROM entries WHERE worldId=? AND parentId=? AND live=1 AND kind='file' GROUP BY groupKey ORDER BY groupKey").all(worldId, directoryId);
+            const groups = this.statement("SELECT groupKey,fileType,COUNT(*) AS n,logical_sum(bytes) AS bytes,MAX(COALESCE(observedAt,modifiedAt)) AS latest FROM entries WHERE worldId=? AND parentId=? AND live=1 AND kind='file' GROUP BY groupKey ORDER BY groupKey").all(worldId, directoryId);
             for (const g of groups) {
                 const bucket = Number(String(g.groupKey).split(':')[1]);
                 this.statement('INSERT OR IGNORE INTO group_slots SELECT ?,?,COALESCE(MAX(slot),-1)+1 FROM group_slots WHERE directoryId=?').run(directoryId, g.groupKey!, directoryId);
                 const i = Number(this.statement('SELECT slot FROM group_slots WHERE directoryId=? AND groupKey=?').get(directoryId, g.groupKey!)?.slot);
-                objects.push({ id: `group:${directoryId}:${g.groupKey}`, kind: 'group', name: `${({ code: '代码', document: '文档', image: '图像', archive: '归档', other: '其他' } as Record<string, string>)[String(g.fileType)]}建筑群 ${bucket + 1}`, fileType: g.fileType as FileType, members: [], bytes: String(g.bytes), repository: false, count: Number(g.n), x: (i % 3 - 1) * 17, z: Math.floor(i / 3) * 16 });
+                objects.push({ id: `group:${directoryId}:${g.groupKey}`, kind: 'group', name: `${({ code: '代码', document: '文档', image: '图像', archive: '归档', other: '其他' } as Record<string, string>)[String(g.fileType)]}建筑群 ${bucket + 1}`, fileType: g.fileType as FileType, members: [], bytes: String(g.bytes), repository: false, activity: activityScore(String(g.latest),directory.relativePath), count: Number(g.n), x: (i % 3 - 1) * 17, z: Math.floor(i / 3) * 16 });
             }
         }
         let selected: CatalogEntry | null = null;

@@ -4,6 +4,8 @@ export const CATALOG_CHANNEL = 'byteatlas:catalog';
 export type ScanState = 'idle' | 'running' | 'paused' | 'cancelled' | 'complete' | 'unavailable' | 'interrupted';
 export type Completeness = 'unknown' | 'partial' | 'complete' | 'unavailable';
 export interface CatalogEntry extends Entry {
+    observedAt: string | null;
+    changeKind: 'added' | 'modified' | 'removed' | null;
     worldId: string;
     relativePath: string;
     link: boolean;
@@ -14,6 +16,7 @@ export interface CatalogEntry extends Entry {
     groupKey: string;
 }
 export interface World {
+    monitor: 'stopped' | 'watching' | 'fallback';
     excludedPaths: string[];
     id: string;
     rootId: string;
@@ -28,7 +31,7 @@ export interface World {
 }
 export interface SavedView extends Visit {
     page: number;
-    mode: 'capacity' | 'type';
+    mode: 'capacity' | 'type' | 'activity';
     theme: 'warm' | 'dusk';
 }
 export interface ScenePage {
@@ -128,7 +131,7 @@ const string = (v: unknown, max = 200): v is string => typeof v === 'string' && 
 const nullableId = (v: unknown): boolean => v === null || string(v);
 const page = (v: unknown): boolean => Number.isSafeInteger(v) && (v as number) >= 0 && (v as number) <= 1000000;
 export function isSavedView(v: unknown): v is SavedView {
-    if (!isRecord(v) || Object.keys(v).some(k => !['directoryId', 'selectedId', 'camera', 'page', 'mode', 'theme'].includes(k)) || !string(v.directoryId) || !nullableId(v.selectedId) || !page(v.page) || !['capacity', 'type'].includes(String(v.mode)) || !['warm', 'dusk'].includes(String(v.theme)))
+    if (!isRecord(v) || Object.keys(v).some(k => !['directoryId', 'selectedId', 'camera', 'page', 'mode', 'theme'].includes(k)) || !string(v.directoryId) || !nullableId(v.selectedId) || !page(v.page) || !['capacity', 'type', 'activity'].includes(String(v.mode)) || !['warm', 'dusk'].includes(String(v.theme)))
         return false;
     const c = v.camera;
     return c === undefined || (isRecord(c) && Object.keys(c).length === 3 && ['position', 'target'].every(k => Array.isArray(c[k]) && c[k].length === 3 && c[k].every((n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 100000)) && typeof c.zoom === 'number' && c.zoom >= .45 && c.zoom <= 3.8);

@@ -1,6 +1,6 @@
 {
   "name": "byteatlas",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "description": "电脑世界探索器 — Windows 微缩城市沙盘",
   "author": "ByteAtlas",
@@ -19,10 +19,15 @@
     "test": "vitest run",
     "build": "npm run typecheck && electron-vite build",
     "pack": "npm run build && electron-builder --win --x64 --dir",
+    "dist": "npm run build && electron-builder --win nsis --x64 --publish never",
     "smoke": "node scripts/smoke.mjs",
     "smoke:dev": "node scripts/smoke.mjs --dev-server",
     "smoke:packaged": "node scripts/smoke.mjs --packaged",
+    "verify:install": "node scripts/verify-installation.mjs",
+    "verify:upgrade": "node scripts/verify-upgrade.mjs",
+    "verify:listener-endurance": "node scripts/verify-listener-endurance.mjs",
     "benchmark:catalog": "node scripts/benchmark-catalog.mjs",
+    "benchmark:desktop-catalog": "node scripts/benchmark-desktop-catalog.mjs",
     "benchmark:graphics": "node scripts/benchmark-graphics.mjs"
   },
   "dependencies": {

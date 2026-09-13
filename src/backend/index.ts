@@ -4,12 +4,14 @@ import { isBackendRequest, isRecord } from '../shared/contracts/desktop';
 import { isCatalogRequest } from '../shared/contracts/catalog';
 import { IndexStore } from './index-store';
 import { Scanner } from './scanner';
+import { ChangeMonitor } from './change-monitor';
 import { checkedPath } from './path-safety';
 const port = process.parentPort;
 if (!port)
     throw Error('UTILITY_PROCESS_REQUIRED');
 let store: IndexStore | undefined;
 let scanner: Scanner | undefined;
+let monitor: ChangeMonitor | undefined;
 let pending = 0;
 async function dispatch(request: unknown): Promise<unknown> {
     if (!store || !scanner)
@@ -21,9 +23,12 @@ async function dispatch(request: unknown): Promise<unknown> {
     switch (request.action) {
         case 'worlds': return store.worlds();
         case 'scan':
+            if(request.command==='cancel') monitor?.disable(request.worldId);
             await scanner.control(request.worldId, request.command);
+            if(request.command==='start'||request.command==='resume')monitor?.enable(request.worldId);
             return store.world(request.worldId);
         case 'remove':
+            monitor?.disable(request.worldId);
             await scanner.control(request.worldId, 'cancel');
             store.removeWorld(request.worldId);
             return null;
@@ -53,12 +58,13 @@ try {
     mkdirSync(directory, { recursive: true });
     store = new IndexStore(join(directory, 'index.sqlite'));
     scanner = new Scanner(store, undefined, [dirname(directory)]);
+    monitor = new ChangeMonitor(store,scanner);
     const health = store.recordBoot();
     port.on('message', ({ data }: {
         data: unknown;
     }) => {
         if (isBackendRequest(data)) {
-            void scanner!.stop().then(() => { store?.close(); store = undefined; process.exit(0); });
+            void monitor!.stop().then(() => { store?.close(); store = undefined; process.exit(0); });
             return;
         }
         if (!isRecord(data) || data.type !== 'catalog' || !Number.isSafeInteger(data.id))

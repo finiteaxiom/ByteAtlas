@@ -5,18 +5,21 @@ import { resolve, join, dirname } from 'node:path';
 import assert from 'node:assert/strict';
 
 const require = createRequire(import.meta.url);
-const packaged = process.argv.includes('--packaged');
+const installed = process.argv.find(arg=>arg.startsWith('--installed='))?.slice('--installed='.length);
+const packaged = process.argv.includes('--packaged') || Boolean(installed);
 const devServer = process.argv.includes('--dev-server');
+const dataRoot = process.argv.find(arg=>arg.startsWith('--data-root='))?.slice('--data-root='.length);
 assert.ok(!(packaged && devServer), 'Choose packaged or dev-server mode');
-const executable = devServer ? process.execPath : packaged ? resolve('dist/win-unpacked/ByteAtlas.exe') : require('electron');
+const executable = installed ? resolve(installed) : devServer ? process.execPath : packaged ? resolve('dist/win-unpacked/ByteAtlas.exe') : require('electron');
 const artifactRoot = resolve('.artifacts');
 await mkdir(artifactRoot, { recursive: true });
-const directory = await mkdtemp(join(artifactRoot, devServer ? 'dev-server-' : packaged ? 'packaged-' : 'development-'));
+const directory = dataRoot ? resolve(dataRoot) : await mkdtemp(join(artifactRoot, devServer ? 'dev-server-' : packaged ? 'packaged-' : 'development-'));
+await mkdir(directory, { recursive: true });
 
-async function runOnce() {
+async function runOnce(recover = false) {
   const prefix = devServer
-    ? [join(dirname(require.resolve('electron-vite/package.json')), 'bin/electron-vite.js'), 'dev', '--', `--smoke-root=${directory}`]
-    : [...(packaged ? [] : ['.']), `--smoke-root=${directory}`];
+    ? [join(dirname(require.resolve('electron-vite/package.json')), 'bin/electron-vite.js'), 'dev', '--', `--smoke-root=${directory}`, ...(recover ? ['--smoke-recover'] : [])]
+    : [...(packaged ? [] : ['.']), `--smoke-root=${directory}`, ...(recover ? ['--smoke-recover'] : [])];
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
   await new Promise((resolveRun, reject) => {
@@ -50,8 +53,9 @@ async function runOnce() {
 }
 
 const first = await runOnce();
-const second = await runOnce();
-assert.equal(first.health.data.bootCount, 1);
-assert.equal(second.health.data.bootCount, 2);
+const second = await runOnce(true);
+assert.equal(second.health.data.bootCount, first.health.data.bootCount + 1);
+if (!dataRoot) assert.equal(first.health.data.bootCount, 1);
 assert.equal(second.catalog.reopenedSavedView, true);
+assert.equal(second.recovered, true);
 console.log(JSON.stringify({ passed: true, packaged, devServer, persistedBootCounts: [1, 2], evidence: directory, versions: second.versions }, null, 2));

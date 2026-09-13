@@ -19,18 +19,19 @@ export async function exerciseCatalog(contents: WebContents, backend: BackendHos
     try {
         const result = await contents.executeJavaScript(`(async()=>{
   const wait=async(fn)=>{for(let i=0;i<300;i++){if(await fn())return;await new Promise(r=>setTimeout(r,30));}throw Error('Real catalog timeout: '+fn.toString());};
+  const click=(selector)=>{const node=document.querySelector(selector);if(!node)throw Error('Missing UI target: '+selector);node.click();};
   let seq=0;const call=async(r)=>{const result=await window.byteAtlas.catalog({...r,requestId:'smoke-ui-'+(++seq)});if(!result.ok)throw Error(result.error.message);return result.data;};
   const id=${JSON.stringify(world.id)};
   const invalid=await window.byteAtlas.catalog({action:'createTrusted',path:'forbidden',requestId:'invalid'});if(invalid.ok||invalid.error.code!=='BAD_REQUEST')throw Error('Unsafe catalog accepted');
   await wait(async()=> (await call({action:'worlds'})).find(w=>w.id===id).state==='complete');
-  document.querySelector('.leave-demo').click();await wait(()=>document.querySelector('[data-world="'+id+'"]'));document.querySelector('[data-world="'+id+'"]').click();
+  click('.leave-demo');await wait(()=>document.querySelector('[data-world="'+id+'"]'));click('[data-world="'+id+'"]');
   await wait(()=>document.querySelector('[data-real-world]')&&document.querySelector('canvas'));
   const search=await call({action:'search',worldId:id,query:'单.txt',cursor:null});if(search.entries.length!==1)throw Error('Chinese lookup mismatch');
   const target=search.entries[0];const resolved=await call({action:'resolve',worldId:id,entryId:target.id});
   const scene=await call({action:'scene',worldId:id,directoryId:resolved.directoryId,page:resolved.page,selectedId:target.id});if(scene.selected.bytes!=='17')throw Error('Wrong byte count');
   const wrong=await window.byteAtlas.catalog({action:'resolve',worldId:'wrong-world',entryId:target.id,requestId:'bad-world'});if(wrong.ok)throw Error('Cross-world ID accepted');
   const input=document.querySelector('[aria-label="搜索真实文件"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'贴图_1');input.dispatchEvent(new Event('input',{bubbles:true}));
-  await wait(()=>document.querySelector('[data-search-result]'));document.querySelector('[data-search-result]').click();
+  await wait(()=>document.querySelector('[data-search-result]'));click('[data-search-result]');
   await wait(()=>document.querySelector('[data-real-world]').dataset.selected&&document.querySelector('[data-real-world]').dataset.directory!==${JSON.stringify(world.rootId)});
   await wait(()=>document.querySelector('.canvas-host').dataset.sceneState==='ready');
   await new Promise(r=>setTimeout(r,1200));
@@ -42,6 +43,9 @@ export async function exerciseCatalog(contents: WebContents, backend: BackendHos
         if (!(await clipboard.readText()).endsWith('单.txt'))
             throw Error('System copy did not write resolved path');
         await captureSmoke(contents, join(directory, 'real-world.png'));
+        await contents.executeJavaScript(`document.querySelectorAll('.top-mode-switch button')[2].click()`);
+        await new Promise(r=>setTimeout(r,250));
+        await captureSmoke(contents, join(directory,'activity.png'));
         if (beforeView && !beforeView.selectedId)
             throw Error('Restart view lost selection');
         return { ...result, reopenedSavedView: Boolean(beforeView) };

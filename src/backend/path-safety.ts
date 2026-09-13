@@ -5,9 +5,11 @@ export async function checkedPath(root: string, relativePath: string, allowLink 
     path: string;
     link: boolean;
 }> {
-    const rootReal = await realpath(root).catch(() => { throw Error('ROOT_UNAVAILABLE'); });
-    // A root replaced with a link must not silently change the authorized world.
-    if (relative(root, rootReal) !== '')
+    // Roots are canonicalized when a world is created.  Re-stat it for every
+    // checked child so a later junction replacement is still rejected, without
+    // resolving the same root path again for every entry in a large directory.
+    const rootInfo = await lstat(root).catch(() => { throw Error('ROOT_UNAVAILABLE'); });
+    if (!rootInfo.isDirectory() || rootInfo.isSymbolicLink())
         throw Error('OUTSIDE_ROOT');
     const target = resolve(root, relativePath);
     if (!within(root, target))

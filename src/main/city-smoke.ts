@@ -42,7 +42,9 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
     await wait(() => document.querySelector('[data-search-result="huge"]'), 'Chinese search');
     await click('[data-search-result="huge"]'); await wait(() => directory('04-archive') && el('.app').dataset.selected === 'huge', 'search navigation');
     if (!el('.details').textContent.includes('68719476736 B')) throw new Error('Incorrect exact byte count');
-    [...document.querySelectorAll('.pathbar button')].find(e => e.textContent === '我的工作空间').click();
+    const rootCrumb = [...document.querySelectorAll('.compact-crumbs button')].find(e => e.textContent === '我的工作空间');
+    if (!rootCrumb) throw new Error('Missing root breadcrumb');
+    rootCrumb.click();
     await wait(() => directory('world'), 'home');
     await click('[data-enter="06-empty"]'); await wait(() => directory('06-empty'), 'empty directory');
     if (document.querySelectorAll('[data-select]').length !== 0) throw new Error('Empty directory has fake objects');
@@ -58,7 +60,15 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
   const read = (): Promise<{ camera: string; directory: string; selected: string }> => contents.executeJavaScript(`({ camera:document.querySelector('.canvas-host').dataset.camera, directory:document.querySelector('.app').dataset.directory, selected:document.querySelector('.app').dataset.selected })`);
   const settle = (): Promise<unknown> => contents.executeJavaScript('new Promise(r => setTimeout(r,100))');
   const before = await read();
-  const x = Math.round(geometry.left + geometry.width * 0.65), y = Math.round(geometry.top + geometry.height * 0.65);
+  const interactionPoint = await contents.executeJavaScript(`(() => {
+    const r=document.querySelector('canvas').getBoundingClientRect();
+    for(let fy=.32;fy<.82;fy+=.1) for(let fx=.22;fx<.78;fx+=.1) {
+      const x=Math.round(r.left+r.width*fx), y=Math.round(r.top+r.height*fy);
+      if(document.elementFromPoint(x,y)?.tagName==='CANVAS') return {x,y};
+    }
+    throw new Error('No uncovered canvas point');
+  })()`);
+  const { x, y } = interactionPoint;
   contents.sendInputEvent({ type: 'mouseWheel', x, y, deltaY: 100, deltaX: 0, canScroll: true });
   await settle();
   const zoomed = await read();
@@ -96,6 +106,6 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
   if ((await read()).directory !== '01-workshop') throw new Error('Canvas double click did not enter directory');
   await contents.executeJavaScript(`document.querySelector('[data-action="back"]').click()`);
   await contents.executeJavaScript('new Promise(r => setTimeout(r,350))');
-  await contents.executeJavaScript(`document.querySelector('[aria-label="关闭详情"]').click()`);
+  await contents.executeJavaScript(`document.querySelector('[aria-label="关闭详情"]')?.click()`);
   return { ...interfaceChecks, pointerChecks: ['wheel zoom retains directory', 'pan does not select', 'right drag rotates', 'raycast selects district', 'canvas double click enters'] };
 }

@@ -9,7 +9,17 @@ asar: true
 electronDist: node_modules/electron/dist
 npmRebuild: false
 win:
+  icon: assets/icon.ico
   target:
     - target: dir
       arch: [x64]
-  signAndEditExecutable: false
+  signAndEditExecutable: true
+nsis:
+  installerIcon: assets/icon.ico
+  uninstallerIcon: assets/icon.ico
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  deleteAppDataOnUninstall: false
+  runAfterFinish: false
+  artifactName: ByteAtlas-${version}-windows-x64-setup.${ext}

@@ -8,8 +8,12 @@ export interface Entry {
   modifiedAt: string;
   fileType: FileType;
   repository?: boolean;
+  // Demo-only deterministic activity samples may use this; real worlds derive
+  // activity in the backend from mtime / observed changes instead.
+  activity?: number;
 }
 export interface CityObject {
+  activity?: number;
   statusLabel?: string;
   id: string;
   kind: 'directory' | 'file' | 'group';
@@ -86,7 +90,8 @@ export function createObjects(entries: Entry[], directoryId: string, previous?: 
     for (const item of contents.filter(c => c.kind === 'file')) counts.set(item.fileType, (counts.get(item.fileType) ?? 0) + 1);
     const dominant = [...counts].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0]?.[0] ?? 'other';
     return { id: e.id, kind: e.kind, name: e.name, fileType: e.kind === 'file' ? e.fileType : dominant, members: [e.id],
-      bytes: totalBytes(contents), repository: Boolean(e.repository), count: contents.filter(f => f.kind === 'file').length };
+      bytes: totalBytes(contents), repository: Boolean(e.repository), count: contents.filter(f => f.kind === 'file').length,
+      activity: Math.max(0, ...contents.map(item => item.activity ?? 0)) };
   });
   if (grouped) {
     const groups = new Map<string, Entry[]>();
@@ -95,7 +100,8 @@ export function createObjects(entries: Entry[], directoryId: string, previous?: 
       groups.set(key, [...(groups.get(key) ?? []), file]);
     }
     for (const [id, members] of groups) objects.push({ id, kind: 'group', name: `${typeNames[members[0]!.fileType]}建筑群 ${Number(id.split(':').at(-1)) + 1}`,
-      fileType: members[0]!.fileType, members: members.map(e => e.id).sort(), bytes: totalBytes(members), repository: false, count: members.length });
+      fileType: members[0]!.fileType, members: members.map(e => e.id).sort(), bytes: totalBytes(members), repository: false, count: members.length,
+      activity: Math.max(0, ...members.map(item => item.activity ?? 0)) });
   }
   return { objects, grouped };
 }

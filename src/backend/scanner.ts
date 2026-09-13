@@ -13,6 +13,15 @@ export class Scanner {
         done: Promise<void>;
     };
     constructor(private store: IndexStore, private openDirectory: typeof opendir = opendir, private excludedRoots: string[] = []) { }
+    get busy(): boolean { return Boolean(this.active); }
+    async reconcile(worldId: string, directories?: string[]): Promise<void> {
+        if(this.active) throw Error('BUSY');
+        const generation=directories?this.store.selective(worldId,directories):this.store.begin(worldId);
+        const job={worldId,paused:false,cancelled:false,done:Promise.resolve()};this.active=job;
+        this.store.observe(worldId,Boolean(this.store.world(worldId).verifiedAt));
+        job.done=this.run(job,generation,false).catch(()=>this.store.setState(worldId,'interrupted')).finally(()=>{this.store.observe(worldId,false);this.active=undefined;});
+        await job.done;
+    }
     async create(path: string) { const root = await realpath(path); const stat=await lstat(root); if (!stat.isDirectory())
         throw Error('BAD_REQUEST'); if (this.excludedRoots.some(path => within(path, root)))
         throw Error('OUTSIDE_ROOT'); return this.store.createWorld(root, this.excludedRoots.filter(path => within(root, path)).map(path => relative(root, path)),stat.mtime.toISOString()); }
@@ -45,8 +54,14 @@ export class Scanner {
         const generation = this.store.begin(worldId);
         const job = { worldId, paused: false, cancelled: false, done: Promise.resolve() };
         this.active = job;
-        job.done = this.run(job, generation).catch(() => { this.store.setState(worldId, 'interrupted'); }).finally(() => { if (this.active === job)
-            this.active = undefined; });
+        // A completed world has an earlier verified snapshot. Differences found by a
+        // later explicit refresh are observations, while the first enumeration is not.
+        this.store.observe(worldId, Boolean(this.store.world(worldId).verifiedAt));
+        job.done = this.run(job, generation).catch(() => { this.store.setState(worldId, 'interrupted'); }).finally(() => {
+            this.store.observe(worldId, false);
+            if (this.active === job)
+                this.active = undefined;
+        });
     }
     private async run(job: NonNullable<Scanner['active']>, generation: number, verify = true): Promise<void> {
         const world = this.store.world(job.worldId);
@@ -83,8 +98,7 @@ export class Scanner {
                 const handle = await this.openDirectory(checked.path, { bufferSize: 64 });
                 let batch: Parameters<IndexStore['upsert']>[2][] = [];
                 const flush = (): void => { if (!batch.length)
-                    return; this.store.transaction(() => { for (const entry of batch)
-                    this.store.upsert(world.id, directory.id, entry, generation); this.store.batch(world.id, batch.length); }); batch = []; };
+                    return; this.store.transaction(() => { this.store.upsertBatch(world.id, directory.id, batch, generation); this.store.batch(world.id, batch.length); }); batch = []; };
                 for await (const item of handle) {
                     while (job.paused && !job.cancelled)
                         await delay(25);

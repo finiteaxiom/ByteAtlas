@@ -1,9 +1,9 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { fileHeight, formatBytes, hash, type CameraState, type PlacedObject, type Entry } from '../../shared/world/model';
+import { fileHeight, formatBytes, type CameraState, type PlacedObject, type Entry, type FileType } from '../../shared/world/model';
 import type { CityTheme } from './themes';
 
-type Part = { shape: 'box' | 'roof' | 'tree'; color: string; x: number; y: number; z: number; w: number; h: number; d: number; owner: string | null; fine: boolean };
+type Part = { shape: 'box' | 'roof' | 'tree' | 'round'; color: string; x: number; y: number; z: number; w: number; h: number; d: number; owner: string | null; fine: boolean };
 export class CityRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly camera = new THREE.OrthographicCamera(-40, 40, 40, -40, 0.1, 600);
@@ -39,7 +39,7 @@ export class CityRenderer {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
     this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.15;
+    this.renderer.toneMappingExposure = 1.05;
     host.append(this.renderer.domElement);
     this.renderer.domElement.setAttribute('aria-label', '可平移旋转缩放的城市沙盘');
     this.camera.position.set(55, 64, 65);
@@ -52,8 +52,8 @@ export class CityRenderer {
     this.controls.addEventListener('change', this.requestRender);
     this.controls.addEventListener('start', () => { this.transition = undefined; });
     this.scene.add(this.content, this.marker);
-    this.scene.add(new THREE.HemisphereLight('#fff7e7', '#9eac89', 1.8));
-    const sun = new THREE.DirectionalLight('#fff4d8', 2.4);
+    this.scene.add(new THREE.HemisphereLight('#fff8e9', '#7f9b76', 2.05));
+    const sun = new THREE.DirectionalLight('#ffe9bd', 2.8);
     sun.position.set(-25, 60, 10); sun.castShadow = true;
     sun.shadow.mapSize.set(2048, 2048);
     Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 1, far: 160 });
@@ -85,60 +85,73 @@ export class CityRenderer {
   private part(shape: Part['shape'], color: string, x: number, y: number, z: number, w: number, h: number, d: number, owner: string | null = null, fine = false): void {
     this.parts.push({ shape, color, x, y, z, w, h, d, owner, fine });
   }
-  private building(x: number, z: number, height: number, color: string, owner: string, tower = false): void {
+  private building(x: number, z: number, height: number, color: string, owner: string, family: FileType, tower = false): void {
     const theme = this.theme!;
-    const w = tower ? 2.8 : 2.3; const d = 2.5;
+    const w = tower ? 3 : family === 'image' ? 3.25 : 2.45; const d = family === 'archive' ? 3.1 : 2.65;
     this.part('box', color, x, height / 2 + 0.65, z, w, height, d, owner);
-    if (tower) {
+    if (tower || family === 'archive') {
       this.part('box', theme.wall, x, height + 0.8, z, w + 0.3, 0.3, d + 0.3, owner);
-      this.part('box', theme.roof, x + 0.4, height + 1.15, z, 1.1, 0.5, 1.1, owner);
-    } else this.part('roof', theme.roof, x, height + 1.05, z, w * 0.8, 1.15, d * 0.8, owner);
-    for (let floor = 0; floor < Math.min(12, Math.floor(height / 1.1)); floor++) {
+      this.part('round', theme.roof, x, height + 1.25, z, 1.2, 0.65, 1.2, owner);
+    } else if (family === 'code') {
+      this.part('box', '#405d60', x, height + .86, z, w + .2, .32, d + .2, owner);
+      this.part('round', theme.types.code, x + .75, height + 1.25, z, .18, .65, .18, owner, true);
+    } else if (family === 'image') {
+      this.part('box', theme.roof, x, height + .8, z, w + .18, .28, d + .18, owner);
+      this.part('box', '#f5d989', x, Math.min(height, 2.2), z + d / 2 + .03, w * .58, 1.15, .05, owner, true);
+    } else if (family === 'document') this.part('roof', theme.roof, x, height + 1.05, z, w * .82, 1.15, d * .82, owner);
+    else this.part('roof', '#c89b70', x, height + .92, z, w * .8, .9, d * .8, owner);
+    for (let floor = 0; floor < Math.min(10, Math.floor(height / 1.15)); floor++) {
       for (const offset of [-0.55, 0.55]) {
         this.part('box', '#6f8886', x + offset, 1.25 + floor * 1.05, z + d / 2 + 0.012, 0.43, 0.52, 0.035, owner, true);
         this.part('box', '#6f8886', x + w / 2 + 0.012, 1.25 + floor * 1.05, z + offset, 0.035, 0.52, 0.43, owner, true);
       }
     }
-    this.part('box', '#8e7053', x, 1.1, z + d / 2 + 0.02, 0.45, 0.9, 0.04, owner);
+    this.part('box', family === 'code' ? '#d6b864' : '#8e7053', x, 1.1, z + d / 2 + 0.02, .5, .9, .04, owner);
   }
   private tree(x: number, z: number): void {
     this.part('box', '#a18763', x, 1.05, z, 0.24, 1.4, 0.24);
     this.part('tree', this.theme!.foliage, x, 2.1, z, 1.05, 1.45, 1.05);
   }
 
-  setScene(objects: PlacedObject[], theme: CityTheme, mode: 'capacity' | 'type', revealed?: Entry): void {
+  setScene(objects: PlacedObject[], theme: CityTheme, mode: 'capacity' | 'type' | 'activity', revealed?: Entry): void {
     this.clearContent(); this.objects = objects; this.theme = theme;
     this.scene.background = new THREE.Color(theme.sky);
     const maxZ = Math.max(0, ...objects.map(o => o.z));
     this.centerZ = maxZ / 2; this.extent = Math.max(72, maxZ + 47);
-    this.part('box', '#bba482', 0, -1.1, this.centerZ, 58, 1.8, maxZ + 24);
-    this.part('box', theme.ground, 0, -0.12, this.centerZ, 58, 0.4, maxZ + 24);
-    // Longitudinal streets and parcel lanes remain decorative, never traffic evidence.
-    for (const x of [-8.5, 8.5]) this.part('box', theme.road, x, 0.12, this.centerZ, 3, 0.12, maxZ + 23);
+    this.part('box', '#aa9870', 0, -1.1, this.centerZ, 58, 1.8, maxZ + 24);
+    this.part('box', theme.ground, 0, -0.12, this.centerZ, 58, .4, maxZ + 24);
+    // A primary boulevard plus shorter parcel lanes establish orientation; they
+    // are static scenery and never portray real filesystem traffic.
+    this.part('box', theme.road, 0, .12, this.centerZ, 5.2, .12, maxZ + 23);
+    for (const x of [-17, 17]) this.part('box', theme.road, x, .12, this.centerZ, 2.2, .12, maxZ + 23);
     for (let z = -8; z <= maxZ + 8; z += 16) {
-      this.part('box', theme.road, 0, 0.13, z, 57, 0.12, 2.4);
-      for (let x = -26; x < 27; x += 4) this.part('box', '#faf5e8', x, 0.21, z, 1.4, 0.015, 0.12);
+      this.part('box', theme.road, 0, .13, z, 57, .12, 2.8);
+      for (let x = -26; x < 27; x += 5) this.part('box', '#fbf4e5', x, .21, z, 1.7, .015, .13);
     }
     for (const object of objects) {
       const { x, z, id } = object;
-      this.part('box', theme.plot, x, 0.38, z, 13.5, 0.5, 12.5, id);
-      this.part('box', '#c1cba3', x - 5.3, 0.69, z, 1.5, 0.12, 10, id);
-      this.tree(x - 5.3, z - 3.6); this.tree(x - 5.3, z + 0.1); this.tree(x - 5.3, z + 3.7);
-      const color = mode === 'type' ? theme.types[object.fileType] : theme.wall;
-      if (object.kind === 'file') this.building(x + 0.2, z - 0.5, fileHeight(object.bytes), color, id, BigInt(object.bytes) > 104857600n);
+      this.part('box', theme.plot, x, .38, z, 13.2, .5, 12.1, id);
+      this.part('box', '#c8d1ad', x - 5.1, .69, z, 1.15, .12, 9.7, id);
+      this.tree(x - 5.05, z - 3.7); this.tree(x - 5.05, z + 3.7);
+      const color = mode === 'type' ? theme.types[object.fileType] : mode === 'activity' && (object.activity??0)>0 ? '#dfab65' : theme.wall;
+      if(mode==='activity' && (object.activity??0)>0) {
+        const height=.6+2.6*object.activity!;
+        this.part('round','#e2a94c',x+4.8,.82+height/2,z+4.1,.45,height,.45,id);
+      }
+      if (object.kind === 'file') this.building(x + .1, z - .55, fileHeight(object.bytes), color, id, object.fileType, BigInt(object.bytes) > 104857600n);
       else if (object.kind === 'group') {
-        for (let i = 0; i < 4; i++) this.building(x - 2 + i % 2 * 4, z - 2.5 + Math.floor(i / 2) * 4, 2.3, theme.types[object.fileType], id);
-        this.part('box', theme.selection, x + 4.8, 2, z - 4, 0.25, 3, 0.25, id);
+        for (let i = 0; i < 4; i++) this.building(x - 2 + i % 2 * 4, z - 2.4 + Math.floor(i / 2) * 4, 2.15, theme.types[object.fileType], id, object.fileType);
+        this.part('box', theme.selection, x + 4.8, 2, z - 4, .22, 3, .22, id);
       } else if (object.count === 0) {
         this.part('box', '#a3b88c', x + 0.5, 0.7, z, 7, 0.15, 7, id);
         for (const offset of [-2, 2]) this.tree(x + offset, z - 1);
       } else {
-        const count = Math.min(6, object.count);
+        const count = Math.min(6, Math.max(2, Math.ceil(Math.log2(object.count + 1))));
         for (let i = 0; i < count; i++) {
           // Overview miniatures are directory summaries, not selectable file buildings.
-          const height = 2 + (hash(id + i) % 35) / 10;
+          const height = 1.8 + Math.min(3.4, Math.log2(object.count + 1) * .55) + (i % 2) * .45;
           this.building(x - 2 + i % 2 * 4.1, z - 3.3 + Math.floor(i / 2) * 3.25, height,
-            mode === 'type' ? theme.types[object.fileType] : i % 3 === 0 ? '#d8bb8d' : theme.wall, id, Boolean(object.repository));
+            mode === 'type' ? theme.types[object.fileType] : '#e5c59b', id, object.fileType, Boolean(object.repository));
         }
         if (object.repository) {
           this.part('box', theme.types.code, x + 5.1, 0.95, z, 0.18, 0.6, 11.6, id);
@@ -151,6 +164,7 @@ export class CityRenderer {
       const name = document.createElement('span'); name.textContent = object.name;
       const subtitle = document.createElement('small');
       subtitle.textContent = object.statusLabel ?? (object.kind === 'group' ? `${object.count} 个文件 · 聚合` : object.kind === 'directory' ? `${object.repository ? 'Git 工业园 · ' : ''}${object.count} 个文件` : '文件建筑');
+      if(mode==='activity')subtitle.textContent+=` · ◆ ${Math.round((object.activity??0)*100)}%`;
       button.append(name, subtitle);
       button.onclick = () => this.onSelect(id);
       button.ondblclick = () => { if (object.kind === 'directory') this.onEnter(id); };
@@ -159,7 +173,7 @@ export class CityRenderer {
     }
     if (revealed) {
       const group = objects.find(o => o.members.includes(revealed.id));
-      if (group?.kind === 'group') this.building(group.x + 5, group.z + 3.2, fileHeight(revealed.bytes), theme.selection, revealed.id, true);
+      if (group?.kind === 'group') this.building(group.x + 5, group.z + 3.2, fileHeight(revealed.bytes), theme.selection, revealed.id, revealed.fileType, true);
     }
     this.bake(); this.resize(); this.setSelection(this.selected); this.requestRender();
   }
@@ -169,7 +183,7 @@ export class CityRenderer {
     for (const part of this.parts) { const key = `${part.shape}:${part.color}:${part.fine}`; const list = grouped.get(key) ?? []; list.push(part); grouped.set(key, list); }
     for (const list of grouped.values()) {
       const first = list[0]!;
-      const geometry = first.shape === 'roof' ? new THREE.ConeGeometry(1, 1, 4).rotateY(Math.PI / 4) : first.shape === 'tree' ? new THREE.IcosahedronGeometry(1, 0) : new THREE.BoxGeometry(1, 1, 1);
+      const geometry = first.shape === 'roof' ? new THREE.ConeGeometry(1, 1, 4).rotateY(Math.PI / 4) : first.shape === 'tree' ? new THREE.IcosahedronGeometry(1, 0) : first.shape === 'round' ? new THREE.CylinderGeometry(1, 1, 1, 10) : new THREE.BoxGeometry(1, 1, 1);
       const material = new THREE.MeshStandardMaterial({ color: first.color, roughness: 0.88, flatShading: true });
       const mesh = new THREE.InstancedMesh(geometry, material, list.length);
       const transform = new THREE.Object3D();
@@ -204,12 +218,13 @@ export class CityRenderer {
     this.camera.updateProjectionMatrix(); this.controls.update(); this.requestRender();
   }
   focus(id: string): void {
-    this.transition = undefined;
     const object = this.objects.find(o => o.id === id || o.members.includes(id));
     if (!object) return;
     const offset = this.camera.position.clone().sub(this.controls.target);
-    this.controls.target.set(object.x, 0, object.z); this.camera.position.copy(this.controls.target).add(offset);
-    this.camera.zoom = 1.8; this.camera.updateProjectionMatrix(); this.controls.update(); this.requestRender();
+    const target: CameraState = { position: [object.x + offset.x, offset.y, object.z + offset.z], target: [object.x, 0, object.z], zoom: 1.7 };
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) this.transition = { from: this.getCamera(), to: target, start: performance.now() };
+    else { this.camera.position.fromArray(target.position); this.controls.target.fromArray(target.target); this.camera.zoom = target.zoom; this.camera.updateProjectionMatrix(); this.controls.update(); }
+    this.requestRender();
   }
   zoom(factor: number): void { this.transition = undefined; this.camera.zoom = Math.max(0.45, Math.min(3.8, this.camera.zoom * factor)); this.camera.updateProjectionMatrix(); this.requestRender(); }
   private pick(event: PointerEvent | MouseEvent): string | null {

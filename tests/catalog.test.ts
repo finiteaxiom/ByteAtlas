@@ -123,6 +123,9 @@ describe('real catalog integrity', () => {
         expect(store.search(world.id, 'private', null).entries).toHaveLength(0);
         await expect(checkedPath(root, '链接')).rejects.toThrow('OUTSIDE_ROOT');
         expect((await checkedPath(root, '链接', true)).link).toBe(true);
+        const rootAlias = join(path, 'root-alias');
+        await symlink(root, rootAlias, 'junction');
+        await expect(checkedPath(rootAlias, '')).rejects.toThrow('OUTSIDE_ROOT');
         expect(within(root, outside)).toBe(false);
         expect(() => store.entry('other-world', link.id)).toThrow('NOT_FOUND');
     });
