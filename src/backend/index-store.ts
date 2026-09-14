@@ -363,7 +363,7 @@ export class IndexStore {
                 const bucket = Number(String(g.groupKey).split(':')[1]);
                 this.statement('INSERT OR IGNORE INTO group_slots SELECT ?,?,COALESCE(MAX(slot),-1)+1 FROM group_slots WHERE directoryId=?').run(directoryId, g.groupKey!, directoryId);
                 const i = Number(this.statement('SELECT slot FROM group_slots WHERE directoryId=? AND groupKey=?').get(directoryId, g.groupKey!)?.slot);
-                objects.push({ id: `group:${directoryId}:${g.groupKey}`, kind: 'group', name: `${({ code: '代码', document: '文档', image: '图像', archive: '归档', other: '其他' } as Record<string, string>)[String(g.fileType)]}建筑群 ${bucket + 1}`, fileType: g.fileType as FileType, members: [], bytes: String(g.bytes), repository: false, activity: activityScore(String(g.latest),directory.relativePath), count: Number(g.n), x: (i % 3 - 1) * 17, z: Math.floor(i / 3) * 16 });
+                objects.push({ id: `group:${directoryId}:${g.groupKey}`, kind: 'group', name: `${({ code: '代码', document: '文档', image: '图像', media: '影音', archive: '归档', other: '其他' } as Record<string, string>)[String(g.fileType)]}建筑群 ${bucket + 1}`, fileType: g.fileType as FileType, members: [], bytes: String(g.bytes), repository: false, activity: activityScore(String(g.latest),directory.relativePath), count: Number(g.n), x: (i % 3 - 1) * 17, z: Math.floor(i / 3) * 16 });
             }
         }
         let selected: CatalogEntry | null = null;
@@ -378,7 +378,7 @@ export class IndexStore {
             if (group)
                 group.members = [selected.id];
         }
-        return { world, directory, ancestors: this.ancestors(worldId, directoryId), objects, page, pages: Math.max(2, Math.ceil(count / 60) + 1), selected };
+        return { world, directory, ancestors: this.ancestors(worldId, directoryId), objects, page, pages: Math.max(2, Math.ceil(count / 60) + 1), selected, environment: { key: directoryId, slots: count } };
     }
     resolve(worldId: string, id: string): {
         directoryId: string;

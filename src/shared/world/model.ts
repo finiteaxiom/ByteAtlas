@@ -1,4 +1,4 @@
-export type FileType = 'code' | 'document' | 'image' | 'archive' | 'other';
+export type FileType = 'code' | 'document' | 'image' | 'media' | 'archive' | 'other';
 export interface Entry {
   id: string;
   parentId: string | null;
@@ -122,4 +122,4 @@ export function reconcileLayout(objects: CityObject[], grouped: boolean, previou
 export function placeObjects(objects: CityObject[], layout: Layout): PlacedObject[] {
   return objects.map(object => { const slot = layout.slots[object.id]!; return { ...object, x: (slot % 3 - 1) * 17, z: Math.floor(slot / 3) * 16 }; });
 }
-export const typeNames: Record<FileType, string> = { code: '代码', document: '文档', image: '图像', archive: '归档', other: '其他' };
+export const typeNames: Record<FileType, string> = { code: '代码', document: '文档', image: '图像', media: '影音', archive: '归档', other: '其他' };

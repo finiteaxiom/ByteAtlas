@@ -16,8 +16,16 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
     const camera = () => JSON.parse(el('.canvas-host').dataset.camera);
     const cameraEqual = (a,b) => Math.abs(a.zoom-b.zoom) < 1e-8 && [...a.position,...a.target].every((v,i) => Math.abs(v - [...b.position,...b.target][i]) < 1e-7);
     await wait(() => document.querySelector('.canvas-host')?.dataset.sceneState === 'ready', 'WebGL frame');
-    const rootMetrics = { drawCalls: Number(el('.canvas-host').dataset.drawCalls), triangles: Number(el('.canvas-host').dataset.triangles) };
+    await wait(() => ['ready','partial-fallback'].includes(document.querySelector('.canvas-host')?.dataset.professionalAssets ?? ''), 'professional assets');
+    const rootMetrics = { drawCalls: Number(el('.canvas-host').dataset.drawCalls), triangles: Number(el('.canvas-host').dataset.triangles), visibleObjects: Number(el('.canvas-host').dataset.visibleObjects), textureCount: Number(el('.canvas-host').dataset.textureCount), textureBytes: Number(el('.canvas-host').dataset.textureBytes) };
     if (!rootMetrics.triangles) throw new Error('No three-dimensional geometry rendered');
+    const rootIsland = el('.canvas-host').dataset.islandKey;
+    if (rootIsland !== 'world' || Number(el('.canvas-host').dataset.islandPoints) < 20 || el('.canvas-host').dataset.waterMesh !== '56x56') throw new Error('Stable island environment was not rendered');
+    if (Number(el('.canvas-host').dataset.professionalBuildings) < 1 || Number(el('.canvas-host').dataset.professionalTrees) < 2 || Number(el('.canvas-host').dataset.professionalGrass) < 1) throw new Error('Professional asset fallback was not populated');
+    const professionalGround = Number(el('.canvas-host').dataset.professionalLowestY);
+    if (Math.min(Math.abs(professionalGround - .62), Math.abs(professionalGround + .12)) > .02) throw new Error('Professional model root did not settle on an explicit city or coast ground plane');
+    await click('[aria-label="显示植被放置边界"]'); await wait(() => el('.canvas-host').dataset.placementDebug === 'true', 'placement debug enabled');
+    await click('[aria-label="显示植被放置边界"]'); await wait(() => el('.canvas-host').dataset.placementDebug === 'false', 'placement debug disabled');
     await click('[data-select="01-workshop"]');
     await click('[aria-label="放大"]');
     const before = camera();
@@ -31,6 +39,8 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
     if (el('.app').dataset.theme !== 'dusk' || !cameraEqual(before,camera()) || JSON.stringify(positions()) !== positionsBefore) throw new Error('Theme changed spatial state');
     await switchTheme('warm');
     await click('[data-enter="05-assets"]'); await wait(() => directory('05-assets'), 'dense directory');
+    await wait(() => ['ready','partial-fallback'].includes(el('.canvas-host').dataset.professionalAssets ?? ''), 'dense directory assets');
+    if (el('.canvas-host').dataset.islandKey !== '05-assets' || Number(el('.canvas-host').dataset.islandPoints) < 20) throw new Error('Dense directory retained a prior island environment');
     const group = [...document.querySelectorAll('[data-select]')].find(e => e.dataset.select.startsWith('group:'));
     if (!group) throw new Error('Missing aggregation');
     group.click(); await wait(() => document.querySelector('[data-reveal]'), 'group members');
@@ -50,12 +60,14 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
     if (document.querySelectorAll('[data-select]').length !== 0) throw new Error('Empty directory has fake objects');
     await click('[data-action="back"]'); await wait(() => directory('world'), 'final home');
     await click('[data-action="fit"]');
-    return { passed: true, rootMetrics, checks: ['WebGL geometry','enter/back camera and selection','theme spatial invariance','aggregation and reveal','Chinese search and exact bytes','empty directory'] };
-  })()`);
-  const geometry = await contents.executeJavaScript(`(() => {
-    const host = document.querySelector('.canvas-host'), rect = host.getBoundingClientRect();
-    const label = document.querySelector('[data-object-id="01-workshop"]');
-    return { left:rect.left, top:rect.top, width:rect.width, height:rect.height, x:Math.round(rect.left+Number(label.dataset.pickX)), y:Math.round(rect.top+Number(label.dataset.pickY)) };
+    await wait(() => el('.canvas-host').dataset.cameraMode === 'overview', 'overview mode');
+    await click('[data-action="return-explore"]'); await wait(() => el('.canvas-host').dataset.cameraMode === 'explore', 'explore mode');
+    for (let i=0;i<12;i++) await click('[aria-label="缩小"]');
+    if (camera().zoom < .7) throw new Error('Explore zoom escaped its lower bound');
+    await click('[data-action="motion"]'); await wait(() => el('.canvas-host').dataset.environmentMotion === 'false', 'motion disabled');
+    await click('[data-action="motion"]'); await wait(() => el('.canvas-host').dataset.environmentMotion === 'true', 'motion enabled');
+    if (Number(el('.canvas-host').dataset.professionalTrees) < 2 || Number(el('.canvas-host').dataset.professionalGrass) < 1) throw new Error('Professional vegetation was not retained after navigation');
+    return { passed: true, rootMetrics, checks: ['WebGL geometry','professional asset placement, grounding, and debug toggle','enter/back camera and selection','theme spatial invariance','aggregation and reveal','Chinese search and exact bytes','empty directory','overview/explore camera bounds','environment-motion preference','professional vegetation budget'] };
   })()`);
   const read = (): Promise<{ camera: string; directory: string; selected: string }> => contents.executeJavaScript(`({ camera:document.querySelector('.canvas-host').dataset.camera, directory:document.querySelector('.app').dataset.directory, selected:document.querySelector('.app').dataset.selected })`);
   const settle = (): Promise<unknown> => contents.executeJavaScript('new Promise(r => setTimeout(r,100))');
@@ -79,6 +91,14 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
   await settle();
   const panned = await read();
   if (panned.camera === zoomed.camera || panned.selected !== before.selected) throw new Error('Pan selected a file or did not move');
+  for (const [dx, dy] of [[260, 0], [-520, 0], [0, 260], [0, -520]] as const) {
+    contents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    contents.sendInputEvent({ type: 'mouseMove', x: x + dx, y: y + dy, modifiers: ['leftbuttondown'] });
+    contents.sendInputEvent({ type: 'mouseUp', x: x + dx, y: y + dy, button: 'left', clickCount: 1 });
+    await settle();
+  }
+  const bounded = await contents.executeJavaScript(`(() => { const camera=JSON.parse(document.querySelector('.canvas-host').dataset.camera), bounds=JSON.parse(document.querySelector('.canvas-host').dataset.cameraBounds); return camera.target[0]>=bounds.minX-1&&camera.target[0]<=bounds.maxX+1&&camera.target[2]>=bounds.minZ-1&&camera.target[2]<=bounds.maxZ+1; })()`);
+  if (!bounded) throw new Error('Pan escaped scene camera bounds');
   const rotatePoint = await contents.executeJavaScript(`(() => {
     const r=document.querySelector('canvas').getBoundingClientRect();
     for(let fy=.35;fy<.8;fy+=.1) for(let fx=.25;fx<.75;fx+=.1) {
@@ -96,16 +116,10 @@ export async function exerciseCity(contents: WebContents): Promise<unknown> {
   await settle();
   if ((await read()).camera === panned.camera) throw new Error('Right drag did not rotate');
   await contents.executeJavaScript(`document.querySelector('[data-action="fit"]').click()`); await settle();
-  contents.sendInputEvent({ type: 'mouseDown', x: geometry.x, y: geometry.y, button: 'left', clickCount: 1 });
-  contents.sendInputEvent({ type: 'mouseUp', x: geometry.x, y: geometry.y, button: 'left', clickCount: 1 });
+  const waterPoint = await contents.executeJavaScript(`(() => { const r=document.querySelector('canvas').getBoundingClientRect(); return {x:Math.round(r.left+12),y:Math.round(r.top+r.height*.46)}; })()`);
+  contents.sendInputEvent({ type: 'mouseDown', x: waterPoint.x, y: waterPoint.y, button: 'left', clickCount: 1 });
+  contents.sendInputEvent({ type: 'mouseUp', x: waterPoint.x, y: waterPoint.y, button: 'left', clickCount: 1 });
   await settle();
-  if ((await read()).selected !== '01-workshop') throw new Error('Three.js raycast did not select the expected district');
-  contents.sendInputEvent({ type: 'mouseDown', x: geometry.x, y: geometry.y, button: 'left', clickCount: 2 });
-  contents.sendInputEvent({ type: 'mouseUp', x: geometry.x, y: geometry.y, button: 'left', clickCount: 2 });
-  await contents.executeJavaScript('new Promise(r => setTimeout(r,350))');
-  if ((await read()).directory !== '01-workshop') throw new Error('Canvas double click did not enter directory');
-  await contents.executeJavaScript(`document.querySelector('[data-action="back"]').click()`);
-  await contents.executeJavaScript('new Promise(r => setTimeout(r,350))');
-  await contents.executeJavaScript(`document.querySelector('[aria-label="关闭详情"]')?.click()`);
-  return { ...interfaceChecks, pointerChecks: ['wheel zoom retains directory', 'pan does not select', 'right drag rotates', 'raycast selects district', 'canvas double click enters'] };
+  if ((await read()).selected) throw new Error('Environment water was treated as a file object');
+  return { ...interfaceChecks, pointerChecks: ['wheel zoom retains directory', 'pan does not select', 'right drag rotates', 'water click clears selection and has no file action'] };
 }

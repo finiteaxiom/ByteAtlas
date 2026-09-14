@@ -42,6 +42,7 @@ export interface ScenePage {
     page: number;
     pages: number;
     selected: CatalogEntry | null;
+    environment: { key: string; slots: number };
 }
 export interface EntryPage {
     entries: CatalogEntry[];

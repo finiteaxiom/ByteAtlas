@@ -24,7 +24,7 @@ export async function exerciseCatalog(contents: WebContents, backend: BackendHos
   const id=${JSON.stringify(world.id)};
   const invalid=await window.byteAtlas.catalog({action:'createTrusted',path:'forbidden',requestId:'invalid'});if(invalid.ok||invalid.error.code!=='BAD_REQUEST')throw Error('Unsafe catalog accepted');
   await wait(async()=> (await call({action:'worlds'})).find(w=>w.id===id).state==='complete');
-  click('.leave-demo');await wait(()=>document.querySelector('[data-world="'+id+'"]'));click('[data-world="'+id+'"]');
+  click('[data-action="worlds"]');await wait(()=>document.querySelector('[data-world="'+id+'"]'));click('[data-world="'+id+'"]');
   await wait(()=>document.querySelector('[data-real-world]')&&document.querySelector('canvas'));
   const search=await call({action:'search',worldId:id,query:'单.txt',cursor:null});if(search.entries.length!==1)throw Error('Chinese lookup mismatch');
   const target=search.entries[0];const resolved=await call({action:'resolve',worldId:id,entryId:target.id});

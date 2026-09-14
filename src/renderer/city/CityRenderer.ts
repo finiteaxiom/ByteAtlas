@@ -1,310 +1,177 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { fileHeight, formatBytes, type CameraState, type PlacedObject, type Entry, type FileType } from '../../shared/world/model';
+import { fileHeight, formatBytes, typeNames, type CameraState, type PlacedObject, type Entry, type FileType } from '../../shared/world/model';
 import type { CityTheme } from './themes';
+import { ProfessionalAssetBank, type ProfessionalModel, type ProfessionalSurface } from './professional-assets';
+import { acceptsSceneAsset, chooseGroundCandidate, rect, type GroundRect } from './vegetation-placement';
+import { createIslandEnvironment, type IslandBounds, type IslandEnvironment, type IslandPoint } from './island-environment';
 
-type Part = { shape: 'box' | 'roof' | 'tree' | 'round'; color: string; x: number; y: number; z: number; w: number; h: number; d: number; owner: string | null; fine: boolean };
+type Surface = 'asphalt' | 'sidewalk' | 'concrete' | 'brick' | 'metal' | 'glass' | 'frame' | 'roof' | 'paint' | 'grass' | 'grassBlade' | 'leaf' | 'leafDark' | 'soil' | 'wood' | 'activity' | `type-${FileType}`;
+type Part = { shape: 'box' | 'roof' | 'foliage' | 'branch' | 'grassClump' | 'round'; surface: Surface; x: number; y: number; z: number; w: number; h: number; d: number; owner: string | null; fine: boolean; wind?: 'branch' | 'leaf' | 'grass'; phase?: number; rotation?: [number, number, number] };
+type Label = { button: HTMLButtonElement; position: THREE.Vector3; id: string; kind: PlacedObject['kind'] };
+type MaterialBundle = { material: THREE.MeshStandardMaterial; textures: THREE.Texture[] };
+type VegetationSway = { mesh: THREE.InstancedMesh; index: number; position: THREE.Vector3; scale: THREE.Vector3; phase: number; kind: NonNullable<Part['wind']>; rotation?: [number, number, number] };
+const surfacePalette: Record<Exclude<Surface, `type-${FileType}`>, { color: string; roughness: number; metalness: number }> = {
+  asphalt: { color: '#555b5d', roughness: .88, metalness: 0 }, sidewalk: { color: '#c0c0b8', roughness: .8, metalness: 0 }, concrete: { color: '#999b94', roughness: .78, metalness: 0 }, brick: { color: '#ad6d57', roughness: .76, metalness: 0 }, metal: { color: '#87979b', roughness: .44, metalness: .46 }, glass: { color: '#87948b', roughness: .38, metalness: .08 }, frame: { color: '#465149', roughness: .56, metalness: .28 }, roof: { color: '#5b6870', roughness: .58, metalness: .16 }, paint: { color: '#dfc36c', roughness: .48, metalness: .06 }, grass: { color: '#748f58', roughness: .92, metalness: 0 }, grassBlade: { color: '#7c9c57', roughness: .86, metalness: 0 }, leaf: { color: '#5f873f', roughness: .82, metalness: 0 }, leafDark: { color: '#426b38', roughness: .88, metalness: 0 }, soil: { color: '#806c4f', roughness: .96, metalness: 0 }, wood: { color: '#72543b', roughness: .72, metalness: 0 }, activity: { color: '#ef9847', roughness: .38, metalness: .1 }
+};
+
 export class CityRenderer {
   readonly renderer: THREE.WebGLRenderer;
   readonly camera = new THREE.OrthographicCamera(-40, 40, 40, -40, 0.1, 600);
-  private scene = new THREE.Scene();
-  private content = new THREE.Group();
-  private controls: OrbitControls;
-  private observer: ResizeObserver;
-  private ray = new THREE.Raycaster();
-  private batches: THREE.InstancedMesh[] = [];
-  private labels: { button: HTMLButtonElement; position: THREE.Vector3; id: string }[] = [];
-  private parts: Part[] = [];
-  private objects: PlacedObject[] = [];
-  private marker = new THREE.Group();
-  private hovered: string | null = null;
-  private selected: string | null = null;
-  private frame = 0;
-  private disposed = false;
-  private pointerStart = { x: 0, y: 0 };
-  private moved = false;
-  private theme?: CityTheme;
-  private extent = 44;
-  private centerZ = 8;
-  private lost = false;
+  private scene = new THREE.Scene(); private environmentLayer = new THREE.Group(); private content = new THREE.Group(); private professionalLayer = new THREE.Group(); private controls: OrbitControls;
+  private observer: ResizeObserver; private ray = new THREE.Raycaster(); private batches: THREE.InstancedMesh[] = []; private vegetation: VegetationSway[] = []; private treeCount = 0; private grassCount = 0;
+  private labels: Label[] = []; private parts: Part[] = []; private objects: PlacedObject[] = []; private marker = new THREE.Group(); private professionalPickers: THREE.Object3D[] = [];
+  private materials = new Map<Surface, MaterialBundle>(); private hovered: string | null = null; private selected: string | null = null;
+  private buildingFootprints: GroundRect[] = []; private plantingAreas: GroundRect[] = []; private coastalPlantingAreas: GroundRect[] = []; private vegetationFootprints: GroundRect[] = []; private placementDebug = false; private placementDebugLayer = new THREE.Group();
+  private readonly professionalAssets = new ProfessionalAssetBank(); private assetRevision = 0; private professionalBuildings = 0; private professionalTrees = 0; private professionalGrass = 0; private professionalAssetFailures = 0; private professionalPlacementRejected = 0; private professionalLowestY = Number.POSITIVE_INFINITY; private environmentMap?: THREE.Texture;
+  private professionalSurfaceRequests = new Set<ProfessionalSurface>();
+  private frame = 0; private environmentTimer = 0; private disposed = false; private pointerStart = { x: 0, y: 0 }; private moved = false;
+  private theme?: CityTheme; private extent = 44; private centerZ = 8; private centerX = 0; private island?: IslandEnvironment; private islandBounds?: IslandBounds; private waterMaterial?: THREE.ShaderMaterial; private lost = false; private environmentMotion = false; private lastMotionAt = performance.now(); private environmentTime = 0; private windBlend = 0; private windTarget = 0;
+  private viewMode: 'explore' | 'overview' = 'explore'; private lastExplore?: CameraState; private minX = -20; private maxX = 20; private minZ = -8; private maxZ = 24; private clampingCamera = false;
   private transition?: { from: CameraState; to: CameraState; start: number };
-  onSelect: (id: string | null) => void = () => {};
-  onEnter: (id: string) => void = () => {};
-  onFailure: (message: string) => void = () => {};
+  onSelect: (id: string | null) => void = () => {}; onEnter: (id: string) => void = () => {}; onFailure: (message: string) => void = () => {};
 
   constructor(private host: HTMLDivElement, private overlay: HTMLDivElement) {
-    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
-    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5));
-    this.renderer.shadowMap.enabled = true;
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    this.renderer.outputColorSpace = THREE.SRGBColorSpace;
-    this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    this.renderer.toneMappingExposure = 1.05;
-    host.append(this.renderer.domElement);
-    this.renderer.domElement.setAttribute('aria-label', '可平移旋转缩放的城市沙盘');
-    this.camera.position.set(55, 64, 65);
-    this.controls = new OrbitControls(this.camera, this.renderer.domElement);
-    this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE };
-    this.controls.minPolarAngle = Math.PI / 8;
-    this.controls.maxPolarAngle = Math.PI / 2.65;
-    this.controls.minZoom = 0.45; this.controls.maxZoom = 3.8;
-    this.controls.enableDamping = false;
-    this.controls.addEventListener('change', this.requestRender);
-    this.controls.addEventListener('start', () => { this.transition = undefined; });
-    this.scene.add(this.content, this.marker);
-    this.scene.add(new THREE.HemisphereLight('#fff8e9', '#7f9b76', 2.05));
-    const sun = new THREE.DirectionalLight('#ffe9bd', 2.8);
-    sun.position.set(-25, 60, 10); sun.castShadow = true;
-    sun.shadow.mapSize.set(2048, 2048);
-    Object.assign(sun.shadow.camera, { left: -70, right: 70, top: 70, bottom: -70, near: 1, far: 160 });
-    sun.shadow.bias = -0.0005; sun.shadow.normalBias = 0.05;
-    this.scene.add(sun);
-    this.observer = new ResizeObserver(this.resize);
-    this.observer.observe(host);
-    const canvas = this.renderer.domElement;
-    canvas.addEventListener('pointerdown', this.pointerDown);
-    canvas.addEventListener('pointermove', this.pointerMove);
-    canvas.addEventListener('pointerup', this.pointerUp);
-    canvas.addEventListener('dblclick', this.doubleClick);
-    canvas.addEventListener('webglcontextlost', this.contextLost);
-    canvas.addEventListener('webglcontextrestored', this.contextRestored);
-    document.addEventListener('visibilitychange', this.requestRender);
-    this.resize();
+    this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false }); this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.5)); this.renderer.shadowMap.enabled = true; this.renderer.shadowMap.type = THREE.PCFSoftShadowMap; this.renderer.outputColorSpace = THREE.SRGBColorSpace; this.renderer.toneMapping = THREE.ACESFilmicToneMapping; this.renderer.toneMappingExposure = 1.06;
+    host.append(this.renderer.domElement); this.renderer.domElement.setAttribute('aria-label', '可平移旋转缩放的城市沙盘'); this.camera.position.set(55, 64, 65); this.controls = new OrbitControls(this.camera, this.renderer.domElement); this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.ROTATE }; this.controls.minPolarAngle = Math.PI / 8; this.controls.maxPolarAngle = Math.PI / 2.65; this.controls.minZoom = .45; this.controls.maxZoom = 4.1; this.controls.enableDamping = false; this.controls.addEventListener('change', this.cameraChanged); this.controls.addEventListener('start', () => { this.transition = undefined; }); this.scene.add(this.environmentLayer, this.content, this.professionalLayer, this.marker);
+    this.scene.add(new THREE.HemisphereLight('#e5f0f1', '#53634e', 2.75)); const sun = new THREE.DirectionalLight('#fff3d7', 4.4); sun.position.set(-42, 74, 18); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); Object.assign(sun.shadow.camera, { left: -62, right: 62, top: 62, bottom: -62, near: 1, far: 180 }); sun.shadow.bias = -.00045; sun.shadow.normalBias = .055; this.scene.add(sun);
+    this.scene.add(this.placementDebugLayer); this.observer = new ResizeObserver(this.resize); this.observer.observe(host); const canvas = this.renderer.domElement; canvas.addEventListener('pointerdown', this.pointerDown); canvas.addEventListener('pointermove', this.pointerMove); canvas.addEventListener('pointerup', this.pointerUp); canvas.addEventListener('dblclick', this.doubleClick); canvas.addEventListener('webglcontextlost', this.contextLost); canvas.addEventListener('webglcontextrestored', this.contextRestored); document.addEventListener('visibilitychange', this.visibilityChanged); this.resize(); this.loadEnvironment();
   }
-
-  private resize = (): void => {
-    const { clientWidth: width, clientHeight: height } = this.host;
-    if (!width || !height) return;
-    this.renderer.setSize(width, height);
-    const ratio = width / height;
-    const span = Math.max(this.extent, 86 / ratio);
-    this.camera.left = -span * ratio / 2; this.camera.right = span * ratio / 2;
-    this.camera.top = span / 2; this.camera.bottom = -span / 2;
-    this.camera.updateProjectionMatrix(); this.requestRender();
-  };
-  private part(shape: Part['shape'], color: string, x: number, y: number, z: number, w: number, h: number, d: number, owner: string | null = null, fine = false): void {
-    this.parts.push({ shape, color, x, y, z, w, h, d, owner, fine });
+  private loadEnvironment(): void { void this.professionalAssets.environment(this.renderer).then(environment => { if (this.disposed) { environment.dispose(); return; } this.environmentMap = environment; this.scene.environment = environment; this.requestRender(); }).catch(() => { this.professionalAssetFailures++; this.host.dataset.professionalAssets = 'environment-fallback'; }); }
+  private clearIsland(): void { this.environmentLayer.traverse(object => { if (object instanceof THREE.Mesh) { object.geometry.dispose(); const material = object.material; if (Array.isArray(material)) material.forEach(item => item.dispose()); else material.dispose(); } }); this.environmentLayer.clear(); this.waterMaterial = undefined; this.island = undefined; this.islandBounds = undefined; this.coastalPlantingAreas = []; }
+  private polygonGeometry(points: IslandPoint[], y: number): THREE.BufferGeometry { const positions: number[] = []; const [cx, cz] = points.reduce(([sumX, sumZ], [x, z]) => [sumX + x, sumZ + z], [0, 0] as [number, number]); const centerX = cx / points.length, centerZ = cz / points.length; for (let index = 0; index < points.length; index++) { const [ax, az] = points[index]!, [bx, bz] = points[(index + 1) % points.length]!; positions.push(centerX, y, centerZ, bx, y, bz, ax, y, az); } const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.computeVertexNormals(); return geometry; }
+  private ringGeometry(outer: IslandPoint[], inner: IslandPoint[], y: number): THREE.BufferGeometry { const positions: number[] = []; for (let index = 0; index < outer.length; index++) { const [oaX, oaZ] = outer[index]!, [obX, obZ] = outer[(index + 1) % outer.length]!, [iaX, iaZ] = inner[index]!, [ibX, ibZ] = inner[(index + 1) % inner.length]!; positions.push(oaX, y, oaZ, iaX, y, iaZ, obX, y, obZ, obX, y, obZ, iaX, y, iaZ, ibX, y, ibZ); } const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.computeVertexNormals(); return geometry; }
+  private buildIsland(city: IslandBounds, key: string): void {
+    this.clearIsland(); const island = createIslandEnvironment(city, key); this.island = island; this.islandBounds = island.bounds; this.coastalPlantingAreas = island.plantingAreas.map(area => ({ ...area }));
+    const waterWidth = island.waterBounds.maxX - island.waterBounds.minX, waterDepth = island.waterBounds.maxZ - island.waterBounds.minZ;
+    const waterGeometry = new THREE.PlaneGeometry(waterWidth, waterDepth, 56, 56).rotateX(-Math.PI / 2); const waterMaterial = new THREE.ShaderMaterial({ uniforms: { time: { value: 0 }, motion: { value: 0 } }, vertexShader: `uniform float time; uniform float motion; varying float wave; void main(){ vec3 p=position; float a=sin((p.x+p.z*.34)*.13+time*.9)+.55*sin((p.z-p.x*.22)*.19-time*.7); p.y+=a*.13*motion; wave=a; gl_Position=projectionMatrix*modelViewMatrix*vec4(p,1.); }`, fragmentShader: `varying float wave; void main(){ vec3 deep=vec3(.045,.20,.27); vec3 shallow=vec3(.12,.39,.46); float light=clamp(.54+wave*.10,0.,1.); gl_FragColor=vec4(mix(deep,shallow,light),1.); }`, side: THREE.FrontSide });
+    const water = new THREE.Mesh(waterGeometry, waterMaterial); water.position.set((island.waterBounds.minX + island.waterBounds.maxX) / 2, -.78, (island.waterBounds.minZ + island.waterBounds.maxZ) / 2); water.receiveShadow = true; water.name = 'environment-water'; this.environmentLayer.add(water); this.waterMaterial = waterMaterial;
+    const shore = new THREE.Mesh(this.ringGeometry(island.outer, island.inner, -.26), new THREE.MeshStandardMaterial({ color: '#b79d72', roughness: .94, metalness: 0 })); shore.name = 'environment-shore'; shore.receiveShadow = true; this.environmentLayer.add(shore);
+    const land = new THREE.Mesh(this.polygonGeometry(island.inner, -.18), new THREE.MeshStandardMaterial({ color: '#748a58', roughness: .96, metalness: 0 })); land.name = 'environment-land'; land.receiveShadow = true; this.environmentLayer.add(land);
+    const rocks = new THREE.Group(); island.outer.filter((_, index) => index % 4 === 1 || index % 7 === 0).forEach(([x, z], index) => { const rock = new THREE.Mesh(new THREE.DodecahedronGeometry(.55 + (index % 3) * .16, 0), new THREE.MeshStandardMaterial({ color: index % 2 ? '#847a68' : '#9b9079', roughness: .93 })); rock.position.set(x, -.05, z); rock.scale.set(1.4, .52, .9 + (index % 2) * .24); rock.rotation.y = index * .83; rock.castShadow = true; rock.receiveShadow = true; rocks.add(rock); }); rocks.name = 'environment-rocks'; this.environmentLayer.add(rocks);
   }
-  private building(x: number, z: number, height: number, color: string, owner: string, family: FileType, tower = false): void {
-    const theme = this.theme!;
-    const w = tower ? 3 : family === 'image' ? 3.25 : 2.45; const d = family === 'archive' ? 3.1 : 2.65;
-    this.part('box', color, x, height / 2 + 0.65, z, w, height, d, owner);
-    if (tower || family === 'archive') {
-      this.part('box', theme.wall, x, height + 0.8, z, w + 0.3, 0.3, d + 0.3, owner);
-      this.part('round', theme.roof, x, height + 1.25, z, 1.2, 0.65, 1.2, owner);
-    } else if (family === 'code') {
-      this.part('box', '#405d60', x, height + .86, z, w + .2, .32, d + .2, owner);
-      this.part('round', theme.types.code, x + .75, height + 1.25, z, .18, .65, .18, owner, true);
-    } else if (family === 'image') {
-      this.part('box', theme.roof, x, height + .8, z, w + .18, .28, d + .18, owner);
-      this.part('box', '#f5d989', x, Math.min(height, 2.2), z + d / 2 + .03, w * .58, 1.15, .05, owner, true);
-    } else if (family === 'document') this.part('roof', theme.roof, x, height + 1.05, z, w * .82, 1.15, d * .82, owner);
-    else this.part('roof', '#c89b70', x, height + .92, z, w * .8, .9, d * .8, owner);
-    for (let floor = 0; floor < Math.min(10, Math.floor(height / 1.15)); floor++) {
-      for (const offset of [-0.55, 0.55]) {
-        this.part('box', '#6f8886', x + offset, 1.25 + floor * 1.05, z + d / 2 + 0.012, 0.43, 0.52, 0.035, owner, true);
-        this.part('box', '#6f8886', x + w / 2 + 0.012, 1.25 + floor * 1.05, z + offset, 0.035, 0.52, 0.43, owner, true);
-      }
-    }
-    this.part('box', family === 'code' ? '#d6b864' : '#8e7053', x, 1.1, z + d / 2 + 0.02, .5, .9, .04, owner);
+  private resize = (): void => { const { clientWidth: width, clientHeight: height } = this.host; if (!width || !height) return; this.renderer.setSize(width, height); const ratio = width / height; const span = Math.max(this.extent, 70 / ratio); this.camera.left = -span * ratio / 2; this.camera.right = span * ratio / 2; this.camera.top = span / 2; this.camera.bottom = -span / 2; this.camera.updateProjectionMatrix(); this.clampCamera(); this.requestRender(); };
+  private part(shape: Part['shape'], surface: Surface, x: number, y: number, z: number, w: number, h: number, d: number, owner: string | null = null, fine = false, wind?: Part['wind'], phase?: number, rotation?: Part['rotation']): void { this.parts.push({ shape, surface, x, y, z, w, h, d, owner, fine, wind, phase, rotation }); }
+  private typeSurface(type: FileType): Surface { return `type-${type}`; }
+  private exterior(type: FileType, typeMode: boolean): Surface { return typeMode ? this.typeSurface(type) : type === 'document' ? 'brick' : type === 'image' || type === 'media' ? 'metal' : type === 'archive' ? 'concrete' : type === 'code' ? 'glass' : 'concrete'; }
+  private building(x: number, z: number, height: number, owner: string, family: FileType, width: number, depth: number, typeMode: boolean, summary = false, variant = 0): void {
+    this.buildingFootprints.push(rect(x, z, width + .7, depth + .7));
+    const body = this.exterior(family, typeMode); const roof = typeMode ? this.typeSurface(family) : 'roof'; const floors = Math.min(9, Math.max(1, Math.floor(height / 1.28)));
+    this.part('box', 'concrete', x, .72, z, width + .38, .34, depth + .38, owner); this.part('box', body, x, height / 2 + .95, z, width, height, depth, owner);
+    for (let floor = 0; floor < floors; floor++) { const y = 1.6 + floor * 1.22; for (let col = -1; col <= 1; col++) { const wx = x + col * width * .23, wz = z + depth / 2 + .012, ww = width * .14; this.part('box', 'glass', wx, y, wz, ww, .48, .028, owner, true); this.part('box', 'frame', wx, y + .285, wz + .016, ww + .11, .055, .055, owner, true); this.part('box', 'frame', wx, y - .285, wz + .016, ww + .11, .055, .055, owner, true); this.part('box', 'frame', wx - ww / 2 - .028, y, wz + .016, .055, .59, .055, owner, true); this.part('box', 'frame', wx + ww / 2 + .028, y, wz + .016, .055, .59, .055, owner, true); } const sideX = x + width / 2 + .012; this.part('box', 'glass', sideX, y, z, .028, .48, depth * .22, owner, true); this.part('box', 'frame', sideX + .016, y + .285, z, .055, .055, depth * .22 + .11, owner, true); this.part('box', 'frame', sideX + .016, y - .285, z, .055, .055, depth * .22 + .11, owner, true); if (floor > 0) this.part('box', 'concrete', x, y - .42, z + depth / 2 + .04, width + .1, .07, .07, owner, true); }
+    this.part('box', family === 'code' ? 'metal' : 'wood', x, 1.35, z + depth / 2 + .075, Math.min(1.25, width * .18), 1.05, .09, owner, true);
+    if (family === 'code') { this.part('box', 'metal', x, height + 1.04, z, width + .36, .28, depth + .36, owner); this.part('round', 'metal', x + width * .28, height + 1.64, z - depth * .2, .13, .95, .13, owner, true); for (const dx of [-.32, .32]) this.part('box', 'glass', x + dx, height + .65, z + depth / 2 + .08, .26, .45, .06, owner, true); }
+    else if (family === 'document') { this.part('roof', roof, x, height + 1.2, z, width * .72, 1.3, depth * .8, owner); this.part('box', 'concrete', x, 1.2, z + depth / 2 + .12, Math.min(2.2, width * .34), .24, .65, owner, true); }
+    else if (family === 'image' || family === 'media') { this.part('box', 'metal', x, height + .98, z, width + .32, .28, depth + .32, owner); if (summary && variant % 3 === 1) this.part('box', 'concrete', x, height + 1.36, z + depth * .1, width * .35, .46, depth * .3, owner, true); if (summary && variant % 3 === 2) this.part('roof', roof, x, height + 1.42, z, width * .32, .58, depth * .42, owner, true); if (family === 'media') for (const dx of [-width * .33, width * .33]) this.part('round', 'metal', x + dx, height + 1.48, z - depth * .25, .26, .52, .26, owner, true); }
+    else if (family === 'archive') { this.part('box', 'metal', x, height + .96, z, width + .24, .28, depth + .24, owner); for (const dx of [-width * .25, width * .25]) this.part('roof', roof, x + dx, height + 1.42, z, width * .22, .7, depth * .85, owner); this.part('box', 'metal', x, 1.5, z + depth / 2 + .08, width * .44, 1.75, .08, owner, true); }
+    else this.part('roof', roof, x, height + 1.12, z, width * .7, 1.15, depth * .74, owner);
+    if (!summary) this.part('box', 'sidewalk', x, .77, z + depth / 2 + .68, Math.min(3.2, width * .48), .08, 1.15, owner, true);
   }
-  private tree(x: number, z: number): void {
-    this.part('box', '#a18763', x, 1.05, z, 0.24, 1.4, 0.24);
-    this.part('tree', this.theme!.foliage, x, 2.1, z, 1.05, 1.45, 1.05);
+  private seeded(x: number, z: number, offset = 0): number { const value = Math.sin(x * 12.9898 + z * 78.233 + offset * 37.719) * 43758.5453; return value - Math.floor(value); }
+  private tree(x: number, z: number, variant = 0): void {
+    const seed = this.seeded(x, z, variant), phase = seed * Math.PI * 2, height = 1.35 + seed * .34, crown = .78 + this.seeded(x, z, variant + 1) * .2; this.treeCount++;
+    const ground = this.groundHeightAt(x, z);
+    this.part('box', 'soil', x, ground - .03, z, 1.06, .055, 1.06); this.part('box', 'wood', x, ground + .08 + height / 2, z, .24, height, .24);
+    for (let branch = 0; branch < 3; branch++) { const angle = phase + branch * Math.PI * 2 / 3; const rootY = ground + .56 + height * (.31 + branch * .12), length = .64 + this.seeded(x, z, branch + 2) * .27; this.part('branch', 'wood', x, rootY, z, .15, length, .15, null, true, 'branch', phase + branch * .83, [Math.cos(angle) * .63, 0, -Math.sin(angle) * .63]); }
+    const clusters: [number, number, number, number, Surface][] = [[0, .18, .04, .72, 'leaf'], [-.56, .05, .24, .57, 'leafDark'], [.53, .08, -.2, .63, 'leaf'], [-.2, .38, -.47, .54, 'leaf'], [.25, .48, .31, .48, 'leafDark'], [.02, .73, -.04, .43, 'leaf']];
+    clusters.forEach(([dx, dy, dz, scale, surface], index) => { const wobble = .93 + this.seeded(x, z, index + 5) * .14; const vertical = .57 + this.seeded(x, z, index + 9) * .12 + (index === clusters.length - 1 ? .16 : 0); this.part('foliage', surface, x + dx * crown, ground + .46 + height + dy * crown, z + dz * crown, crown * scale * wobble * 1.22, crown * scale * vertical, crown * scale * wobble * 1.16, null, index > 1, 'leaf', phase + index * .91); });
   }
-
-  setScene(objects: PlacedObject[], theme: CityTheme, mode: 'capacity' | 'type' | 'activity', revealed?: Entry): void {
-    this.clearContent(); this.objects = objects; this.theme = theme;
-    this.scene.background = new THREE.Color(theme.sky);
-    const maxZ = Math.max(0, ...objects.map(o => o.z));
-    this.centerZ = maxZ / 2; this.extent = Math.max(72, maxZ + 47);
-    this.part('box', '#aa9870', 0, -1.1, this.centerZ, 58, 1.8, maxZ + 24);
-    this.part('box', theme.ground, 0, -0.12, this.centerZ, 58, .4, maxZ + 24);
-    // A primary boulevard plus shorter parcel lanes establish orientation; they
-    // are static scenery and never portray real filesystem traffic.
-    this.part('box', theme.road, 0, .12, this.centerZ, 5.2, .12, maxZ + 23);
-    for (const x of [-17, 17]) this.part('box', theme.road, x, .12, this.centerZ, 2.2, .12, maxZ + 23);
-    for (let z = -8; z <= maxZ + 8; z += 16) {
-      this.part('box', theme.road, 0, .13, z, 57, .12, 2.8);
-      for (let x = -26; x < 27; x += 5) this.part('box', '#fbf4e5', x, .21, z, 1.7, .015, .13);
-    }
-    for (const object of objects) {
-      const { x, z, id } = object;
-      this.part('box', theme.plot, x, .38, z, 13.2, .5, 12.1, id);
-      this.part('box', '#c8d1ad', x - 5.1, .69, z, 1.15, .12, 9.7, id);
-      this.tree(x - 5.05, z - 3.7); this.tree(x - 5.05, z + 3.7);
-      const color = mode === 'type' ? theme.types[object.fileType] : mode === 'activity' && (object.activity??0)>0 ? '#dfab65' : theme.wall;
-      if(mode==='activity' && (object.activity??0)>0) {
-        const height=.6+2.6*object.activity!;
-        this.part('round','#e2a94c',x+4.8,.82+height/2,z+4.1,.45,height,.45,id);
-      }
-      if (object.kind === 'file') this.building(x + .1, z - .55, fileHeight(object.bytes), color, id, object.fileType, BigInt(object.bytes) > 104857600n);
-      else if (object.kind === 'group') {
-        for (let i = 0; i < 4; i++) this.building(x - 2 + i % 2 * 4, z - 2.4 + Math.floor(i / 2) * 4, 2.15, theme.types[object.fileType], id, object.fileType);
-        this.part('box', theme.selection, x + 4.8, 2, z - 4, .22, 3, .22, id);
-      } else if (object.count === 0) {
-        this.part('box', '#a3b88c', x + 0.5, 0.7, z, 7, 0.15, 7, id);
-        for (const offset of [-2, 2]) this.tree(x + offset, z - 1);
-      } else {
-        const count = Math.min(6, Math.max(2, Math.ceil(Math.log2(object.count + 1))));
-        for (let i = 0; i < count; i++) {
-          // Overview miniatures are directory summaries, not selectable file buildings.
-          const height = 1.8 + Math.min(3.4, Math.log2(object.count + 1) * .55) + (i % 2) * .45;
-          this.building(x - 2 + i % 2 * 4.1, z - 3.3 + Math.floor(i / 2) * 3.25, height,
-            mode === 'type' ? theme.types[object.fileType] : '#e5c59b', id, object.fileType, Boolean(object.repository));
-        }
-        if (object.repository) {
-          this.part('box', theme.types.code, x + 5.1, 0.95, z, 0.18, 0.6, 11.6, id);
-          this.part('box', theme.types.code, x, 0.95, z - 5.7, 10.5, 0.6, 0.18, id);
-        }
-      }
-      const button = document.createElement('button');
-      button.className = 'map-label'; button.title = object.name;
-      button.dataset.objectId = id;
-      const name = document.createElement('span'); name.textContent = object.name;
-      const subtitle = document.createElement('small');
-      subtitle.textContent = object.statusLabel ?? (object.kind === 'group' ? `${object.count} 个文件 · 聚合` : object.kind === 'directory' ? `${object.repository ? 'Git 工业园 · ' : ''}${object.count} 个文件` : '文件建筑');
-      if(mode==='activity')subtitle.textContent+=` · ◆ ${Math.round((object.activity??0)*100)}%`;
-      button.append(name, subtitle);
-      button.onclick = () => this.onSelect(id);
-      button.ondblclick = () => { if (object.kind === 'directory') this.onEnter(id); };
-      this.overlay.append(button);
-      this.labels.push({ button, position: new THREE.Vector3(x, 0.9, z + 6.4), id });
-    }
-    if (revealed) {
-      const group = objects.find(o => o.members.includes(revealed.id));
-      if (group?.kind === 'group') this.building(group.x + 5, group.z + 3.2, fileHeight(revealed.bytes), theme.selection, revealed.id, revealed.fileType, true);
-    }
-    this.bake(); this.resize(); this.setSelection(this.selected); this.requestRender();
+  private reserveVegetation(x: number, z: number, radius: number): boolean {
+    const candidate = chooseGroundCandidate(this.plantingAreas, this.buildingFootprints, [[x, z]], radius);
+    if (!candidate) return false;
+    const footprint = rect(x, z, radius * 2, radius * 2); this.buildingFootprints.push(footprint); this.vegetationFootprints.push(footprint);
+    return true;
   }
-
-  private bake(): void {
-    const grouped = new Map<string, Part[]>();
-    for (const part of this.parts) { const key = `${part.shape}:${part.color}:${part.fine}`; const list = grouped.get(key) ?? []; list.push(part); grouped.set(key, list); }
-    for (const list of grouped.values()) {
-      const first = list[0]!;
-      const geometry = first.shape === 'roof' ? new THREE.ConeGeometry(1, 1, 4).rotateY(Math.PI / 4) : first.shape === 'tree' ? new THREE.IcosahedronGeometry(1, 0) : first.shape === 'round' ? new THREE.CylinderGeometry(1, 1, 1, 10) : new THREE.BoxGeometry(1, 1, 1);
-      const material = new THREE.MeshStandardMaterial({ color: first.color, roughness: 0.88, flatShading: true });
-      const mesh = new THREE.InstancedMesh(geometry, material, list.length);
-      const transform = new THREE.Object3D();
-      list.forEach((p, i) => { transform.position.set(p.x, p.y, p.z); transform.scale.set(p.w, p.h, p.d); transform.updateMatrix(); mesh.setMatrixAt(i, transform.matrix); });
-      mesh.userData.owners = list.map(p => p.owner); mesh.instanceMatrix.needsUpdate = true;
-      mesh.userData.fine = first.fine;
-      mesh.castShadow = true; mesh.receiveShadow = true;
-      this.content.add(mesh); this.batches.push(mesh);
-    }
+  private plantTree(x: number, z: number, variant = 0): void { if (this.reserveVegetation(x, z, 1.82)) this.tree(x, z, variant); }
+  private grassPatch(x: number, z: number, count: number, seedOffset = 0): void {
+    for (let index = 0; index < count; index++) { const seed = this.seeded(x, z, seedOffset + index), angle = seed * Math.PI * 2, radius = .22 + this.seeded(x, z, seedOffset + index + 12) * .58; const gx = x + Math.cos(angle) * radius, gz = z + Math.sin(angle) * radius, height = .38 + this.seeded(x, z, seedOffset + index + 25) * .26; if (!this.reserveVegetation(gx, gz, .32)) continue; this.part('grassClump', 'grassBlade', gx, this.groundHeightAt(gx, gz), gz, .42 + seed * .16, height, .42 + seed * .16, null, true, 'grass', seed * Math.PI * 2); this.grassCount++; }
   }
-  setSelection(id: string | null): void { this.selected = id; this.updateMarker(); }
-  private updateMarker(): void {
-    for (const child of [...this.marker.children]) { if (child instanceof THREE.Line) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); } this.marker.remove(child); }
-    const object = this.objects.find(o => o.id === (this.selected ?? this.hovered) || o.members.includes(this.selected ?? ''));
-    if (object && this.theme) {
-      const { x, z } = object;
-      const points = [[-6.9, -6.5], [6.9, -6.5], [6.9, 6.5], [-6.9, 6.5]].map(([dx, dz]) => new THREE.Vector3(x + dx!, 0.72, z + dz!));
-      this.marker.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: this.theme.selection })));
-    }
-    for (const label of this.labels) label.button.dataset.selected = String(label.id === object?.id);
-    this.requestRender();
-  }
-  getCamera(): CameraState { return { position: this.camera.position.toArray(), target: this.controls.target.toArray(), zoom: this.camera.zoom }; }
-  restoreCamera(state?: CameraState, animate = false): void {
-    if (animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      this.transition = { from: this.getCamera(), to: state ?? { position: [57, 65, this.centerZ + 66], target: [0, 0, this.centerZ], zoom: 1 }, start: performance.now() };
-      this.requestRender(); return;
-    }
-    this.transition = undefined;
-    if (state) { this.camera.position.fromArray(state.position); this.controls.target.fromArray(state.target); this.camera.zoom = state.zoom; }
-    else { this.camera.position.set(57, 65, this.centerZ + 66); this.controls.target.set(0, 0, this.centerZ); this.camera.zoom = 1; }
-    this.camera.updateProjectionMatrix(); this.controls.update(); this.requestRender();
-  }
-  focus(id: string): void {
-    const object = this.objects.find(o => o.id === id || o.members.includes(id));
-    if (!object) return;
-    const offset = this.camera.position.clone().sub(this.controls.target);
-    const target: CameraState = { position: [object.x + offset.x, offset.y, object.z + offset.z], target: [object.x, 0, object.z], zoom: 1.7 };
-    if (!matchMedia('(prefers-reduced-motion: reduce)').matches) this.transition = { from: this.getCamera(), to: target, start: performance.now() };
-    else { this.camera.position.fromArray(target.position); this.controls.target.fromArray(target.target); this.camera.zoom = target.zoom; this.camera.updateProjectionMatrix(); this.controls.update(); }
-    this.requestRender();
-  }
-  zoom(factor: number): void { this.transition = undefined; this.camera.zoom = Math.max(0.45, Math.min(3.8, this.camera.zoom * factor)); this.camera.updateProjectionMatrix(); this.requestRender(); }
-  private pick(event: PointerEvent | MouseEvent): string | null {
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    this.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera);
-    for (const hit of this.ray.intersectObjects(this.batches)) {
-      const owner = hit.object.userData.owners?.[hit.instanceId ?? -1];
-      if (owner) return owner as string;
-    }
-    return null;
-  }
-  private pointerDown = (event: PointerEvent): void => { this.pointerStart = { x: event.clientX, y: event.clientY }; this.moved = false; };
-  private pointerMove = (event: PointerEvent): void => {
-    if (Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 5) this.moved = true;
-    if (event.buttons) return;
-    const id = this.pick(event);
-    const object = this.objects.find(o => o.id === id || o.members.includes(id ?? ''));
-    this.renderer.domElement.title = object ? `${object.name} · ${formatBytes(object.bytes)}${object.kind === 'group' ? ` · ${object.count} 个文件` : ''}` : '';
-    if (id !== this.hovered) { this.hovered = id; this.renderer.domElement.style.cursor = id ? 'pointer' : 'grab'; this.updateMarker(); }
-  };
-  private pointerUp = (event: PointerEvent): void => { if (event.button === 0 && !this.moved) this.onSelect(this.pick(event)); };
-  private doubleClick = (event: MouseEvent): void => {
-    if (this.moved) return;
-    const id = this.pick(event);
-    if (this.objects.find(o => o.id === id)?.kind === 'directory' && id) this.onEnter(id);
-  };
-  private contextLost = (event: Event): void => { event.preventDefault(); this.lost = true; this.host.dataset.sceneState = 'lost'; this.onFailure('图形连接已中断，可继续使用左侧列表，或重新加载沙盘。'); };
-  private contextRestored = (): void => { this.lost = false; this.host.dataset.sceneState = 'ready'; this.onFailure(''); this.requestRender(); };
-  private requestRender = (): void => {
-    if (this.disposed || this.frame || this.lost || document.hidden) return;
-    this.frame = requestAnimationFrame(() => {
-      this.frame = 0;
-      if (this.disposed) return;
-      if (this.transition) {
-        const { from, to, start } = this.transition;
-        const t = Math.min(1, (performance.now() - start) / 260), eased = 1 - (1 - t) ** 3;
-        this.camera.position.lerpVectors(new THREE.Vector3(...from.position), new THREE.Vector3(...to.position), eased);
-        this.controls.target.lerpVectors(new THREE.Vector3(...from.target), new THREE.Vector3(...to.target), eased);
-        this.camera.zoom = from.zoom + (to.zoom - from.zoom) * eased;
-        this.camera.updateProjectionMatrix(); this.controls.update();
-        if (t === 1) this.transition = undefined;
-        else this.requestRender();
-      }
-      for (const batch of this.batches) batch.visible = !batch.userData.fine || this.camera.zoom > 0.75;
-      this.renderer.render(this.scene, this.camera);
-      const width = this.host.clientWidth, height = this.host.clientHeight;
-      const occupied: { x: number; y: number }[] = [];
-      for (const label of this.labels) {
-        const v = label.position.clone().project(this.camera);
-        const x = (v.x + 1) * width / 2, y = (1 - v.y) * height / 2;
-        const collision = occupied.some(p => Math.abs(p.x - x) < 115 && Math.abs(p.y - y) < 45);
-        const visible = v.z < 1 && x > 40 && x < width - 40 && y > 25 && y < height - 45 && !collision;
-        label.button.hidden = !visible;
-        if (visible) occupied.push({ x, y });
-        label.button.style.transform = `translate(${x}px, ${y}px) translate(-50%, 0)`;
-        const pick = label.position.clone(); pick.z -= 6.4; pick.y = 2; pick.project(this.camera);
-        label.button.dataset.pickX = String((pick.x + 1) * width / 2);
-        label.button.dataset.pickY = String((1 - pick.y) * height / 2);
-      }
-      this.host.dataset.sceneState = 'ready';
-      this.host.dataset.transition = String(Boolean(this.transition));
-      this.host.dataset.camera = JSON.stringify(this.getCamera());
-      this.host.dataset.drawCalls = String(this.renderer.info.render.calls);
-      this.host.dataset.triangles = String(this.renderer.info.render.triangles);
+  private populateCoastalGreenery(): void {
+    // A sparse, asymmetric edge reads as a transition zone rather than a decorative ring; reserveVegetation keeps it out of roads and buildings.
+    this.coastalPlantingAreas.forEach((area, index) => {
+      const width = area.maxX - area.minX, depth = area.maxZ - area.minZ;
+      const x = area.minX + width * (index % 2 ? .63 : .37), z = area.minZ + depth * (index % 2 ? .39 : .66);
+      if (index === 0 || index === 3) this.plantTree(x, z, 10 + index);
+      this.grassPatch(area.minX + width * .7, area.minZ + depth * .25, index % 2 ? 5 : 7, 90 + index * 11);
     });
-  };
-  private clearContent(): void {
-    for (const batch of this.batches) { batch.geometry.dispose(); (batch.material as THREE.Material).dispose(); batch.dispose(); }
-    this.content.clear(); this.batches = []; this.parts = [];
-    for (const label of this.labels) label.button.remove(); this.labels = [];
   }
-  dispose(): void {
-    this.disposed = true; cancelAnimationFrame(this.frame); this.observer.disconnect();
-    this.controls.dispose(); this.clearContent(); this.selected = null; this.hovered = null; this.updateMarker();
-    const canvas = this.renderer.domElement;
-    canvas.removeEventListener('pointerdown', this.pointerDown); canvas.removeEventListener('pointermove', this.pointerMove);
-    canvas.removeEventListener('pointerup', this.pointerUp); canvas.removeEventListener('dblclick', this.doubleClick);
-    canvas.removeEventListener('webglcontextlost', this.contextLost); canvas.removeEventListener('webglcontextrestored', this.contextRestored);
-    document.removeEventListener('visibilitychange', this.requestRender);
-    this.scene.traverse(object => { if (object instanceof THREE.DirectionalLight) object.shadow.dispose(); });
-    this.renderer.dispose(); canvas.remove();
+  private professionalBuildingTargets(objects: PlacedObject[]): { apartments?: PlacedObject; factory?: PlacedObject } { const files = objects.filter(object => object.kind === 'file'); const summaries = objects.filter(object => object.kind !== 'file'); return { apartments: files.find(object => object.fileType === 'document' || object.fileType === 'image') ?? files[0] ?? summaries[0], factory: files.find(object => object.fileType === 'code' || object.fileType === 'archive') ?? files[1] ?? summaries[1] }; }
+  private parcel(object: PlacedObject): void { const { x, z, id } = object; this.part('box', 'concrete', x, .27, z, 14.45, .22, 13.25, id); this.part('box', 'sidewalk', x, .43, z, 13.94, .11, 12.74, id); this.part('box', 'concrete', x, .55, z - 6.12, 13.92, .12, .22, id); this.part('box', 'concrete', x - 6.88, .55, z, .22, .12, 12.22, id); }
+  setScene(objects: PlacedObject[], theme: CityTheme, mode: 'capacity' | 'type' | 'activity', revealed?: Entry, sceneBytes?: string, environment: { key: string; slots: number } = { key: objects.map(object => object.id).sort().join('|') || 'empty', slots: objects.length }): void {
+    this.clearContent(); const assetRevision = ++this.assetRevision; this.clearProfessionalAssets(); this.buildingFootprints = []; this.plantingAreas = []; this.vegetationFootprints = []; this.objects = objects; this.theme = theme; this.scene.background = new THREE.Color('#c6d7da'); const professionalGreenIds = new Set(objects.filter(object => object.count === 0).map(object => object.id)); const rows = Math.max(1, Math.ceil(Math.max(1, environment.slots) / 3)); const objectMinX = Math.min(-17, ...objects.map(o => o.x)), objectMaxX = Math.max(17, ...objects.map(o => o.x)), objectMinZ = Math.min(0, ...objects.map(o => o.z)), objectMaxZ = Math.max((rows - 1) * 16, ...objects.map(o => o.z)); this.minX = objectMinX - 7.3; this.maxX = objectMaxX + 7.3; this.minZ = objectMinZ - 7; this.maxZ = objectMaxZ + 7; this.centerX = (this.minX + this.maxX) / 2; this.centerZ = (this.minZ + this.maxZ) / 2; this.buildIsland({ minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ }, environment.key); this.plantingAreas.push(...this.coastalPlantingAreas); this.host.dataset.islandKey = environment.key; this.host.dataset.islandPoints = String(this.island?.outer.length ?? 0); this.host.dataset.islandBounds = JSON.stringify(this.islandBounds); this.host.dataset.waterMesh = '56x56'; this.extent = Math.max(30, (this.islandBounds?.maxZ ?? this.maxZ) - (this.islandBounds?.minZ ?? this.minZ) + 12, ((this.islandBounds?.maxX ?? this.maxX) - (this.islandBounds?.minX ?? this.minX) + 12) * .9); const cityWidth = this.maxX - this.minX; const cityDepth = this.maxZ - this.minZ; const maxZ = this.maxZ; const total = BigInt(sceneBytes ?? objects.reduce((sum, object) => sum + BigInt(object.bytes), 0n).toString());
+    for (const laneX of [-8.5, 8.5]) { this.part('box', 'asphalt', laneX, .015, this.centerZ, 3.35, .09, cityDepth - 1.1); this.part('box', 'sidewalk', laneX - 1.28, .07, this.centerZ, .38, .06, cityDepth - 1.1); this.part('box', 'sidewalk', laneX + 1.28, .07, this.centerZ, .38, .06, cityDepth - 1.1); this.part('box', 'paint', laneX, .075, this.centerZ, .12, .025, cityDepth - 1.9); }
+    for (let laneZ = 8; laneZ < maxZ + 8; laneZ += 16) { this.part('box', 'asphalt', this.centerX, .02, laneZ, cityWidth - 1.2, .09, 3.35); this.part('box', 'sidewalk', this.centerX, .075, laneZ - 1.28, cityWidth - 1.2, .06, .38); this.part('box', 'sidewalk', this.centerX, .075, laneZ + 1.28, cityWidth - 1.2, .06, .38); this.part('box', 'paint', this.centerX, .08, laneZ, cityWidth - 2, .025, .12); }
+    for (const object of objects) {
+      const { x, z, id } = object; this.parcel(object); const typeMode = mode === 'type'; if (mode === 'activity' && (object.activity ?? 0) > 0) { const h = .65 + 1.65 * object.activity!; this.part('round', 'activity', x + 5.65, .72 + h / 2, z + 4.9, .22, h, .22, id); }
+      if (object.kind === 'file') this.building(x, z, fileHeight(object.bytes), id, object.fileType, 10.4, 9.4, typeMode);
+      else if (object.kind === 'group') { const count = Math.min(6, Math.max(3, Math.ceil(object.count / 4))); for (let i = 0; i < count; i++) this.building(x - 3.05 + (i % 2) * 6.1, z - 2.8 + Math.floor(i / 2) * 4.3, 2.2 + (i % 2) * .32, id, object.fileType, 5.25 + (i % 2) * .42, 3.55 + (Math.floor(i / 2) % 2) * .35, typeMode, true, i); this.part('box', 'paint', x + 5.78, 1.3, z - 5.05, .18, 1.85, .18, id); }
+      else if (object.count === 0) { this.part('box', 'grass', x, .55, z, 10.9, .1, 9.7, id); this.part('box', 'sidewalk', x, .6, z, 3.1, .08, .7, id); this.plantingAreas.push(rect(x, z - .85, 10.3, 7.45)); if (!professionalGreenIds.has(id)) { this.plantTree(x - 3.3, z - 2.5, 1); this.plantTree(x + 3.4, z + 2.4, 2); this.grassPatch(x - 2.5, z + 1.5, 9, 1); this.grassPatch(x + 2.3, z - 1.8, 8, 20); this.grassPatch(x - .4, z - 3.35, 6, 40); } }
+      else { const count = Math.min(4, Math.max(2, Math.ceil(Math.log2(object.count + 1) / 1.7))); for (let i = 0; i < count; i++) this.building(x - 2.8 + (i % 2) * 5.6, z - 2.7 + Math.floor(i / 2) * 5.3, 2.2 + (i % 2) * .55, id, object.fileType, 4.7 + (i % 2) * .45, 4.25 + (Math.floor(i / 2) % 2) * .32, typeMode, true, i); if (object.repository) { this.part('box', this.typeSurface('code'), x + 5.85, 1.08, z, .18, .82, 11.65, id); this.part('box', this.typeSurface('code'), x, 1.08, z - 5.85, 11.65, .82, .18, id); } }
+      const button = document.createElement('button'); button.className = 'map-label'; button.title = object.name; button.dataset.objectId = id; const name = document.createElement('span'); name.textContent = object.name; const subtitle = document.createElement('small'); const share = total > 0n ? Math.min(100, Number(BigInt(object.bytes) * 1000n / total) / 10) : 0; subtitle.textContent = object.statusLabel ?? (mode === 'capacity' ? `${formatBytes(object.bytes)}${object.kind !== 'file' ? ` · ${share}%` : ''}` : mode === 'activity' ? `◆ ${Math.round((object.activity ?? 0) * 100)}% · 最近 24 小时` : `${typeNames[object.fileType]} · ${object.kind === 'group' || object.kind === 'directory' ? `${object.count} 项` : '文件'}`); button.append(name, subtitle); button.onclick = () => this.onSelect(id); button.ondblclick = () => { if (object.kind === 'directory') this.onEnter(id); }; this.overlay.append(button); this.labels.push({ button, position: new THREE.Vector3(x, .9, z + 6.4), id, kind: object.kind });
+    }
+    if (revealed) { const group = objects.find(o => o.members.includes(revealed.id)); if (group?.kind === 'group') this.building(group.x + 3.3, group.z + 3.5, fileHeight(revealed.bytes), revealed.id, revealed.fileType, 5.1, 4.4, false); }
+    this.populateCoastalGreenery();
+    this.bake(); this.refreshPlacementDebug(); this.resize(); this.setSelection(this.selected); this.requestRender(); void this.installProfessionalAssets(assetRevision, objects);
   }
+  private clearProfessionalAssets(): void { this.professionalLayer.clear(); this.professionalPickers = []; this.professionalBuildings = 0; this.professionalTrees = 0; this.professionalGrass = 0; this.professionalAssetFailures = 0; this.professionalPlacementRejected = 0; this.professionalLowestY = Number.POSITIVE_INFINITY; this.host.dataset.professionalAssets = 'loading'; }
+  private refreshPlacementDebug(): void { for (const child of [...this.placementDebugLayer.children]) { if (child instanceof THREE.Line) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); } this.placementDebugLayer.remove(child); } if (!this.placementDebug) return; const draw = (area: GroundRect, color: string, y: number) => { const points = [[area.minX, area.minZ], [area.maxX, area.minZ], [area.maxX, area.maxZ], [area.minX, area.maxZ]].map(([x, z]) => new THREE.Vector3(x, y, z)); this.placementDebugLayer.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color, depthTest: false }))); }; this.plantingAreas.forEach(area => draw(area, '#38d996', .82)); this.buildingFootprints.forEach(area => draw(area, '#ed5656', .86)); this.vegetationFootprints.forEach(area => draw(area, '#e9ab3f', .9)); }
+  setPlacementDebug(enabled: boolean): void { this.placementDebug = enabled; this.refreshPlacementDebug(); this.host.dataset.placementDebug = String(enabled); this.requestRender(); }
+  private groundHeightAt(x: number, z: number): number { return this.coastalPlantingAreas.some(area => x >= area.minX && x <= area.maxX && z >= area.minZ && z <= area.maxZ) ? -.12 : .62; }
+  private placeProfessionalAsset(model: THREE.Object3D, kind: 'building' | 'tree' | 'grass', owner: string | null, x: number, z: number, width: number, depth: number, height: number, rotation = 0, pitch = 0): boolean {
+    model.rotation.set(pitch, rotation, 0); model.updateMatrixWorld(true); const original = new THREE.Box3().setFromObject(model); const originalSize = original.getSize(new THREE.Vector3()); if (originalSize.x <= 0 || originalSize.y <= 0 || originalSize.z <= 0) throw new Error('专业模型包围盒无效。');
+    const scale = Math.min(width / originalSize.x, depth / originalSize.z, height / originalSize.y); model.scale.multiplyScalar(scale); model.updateMatrixWorld(true); const scaled = new THREE.Box3().setFromObject(model); const center = scaled.getCenter(new THREE.Vector3()); model.position.add(new THREE.Vector3(x - center.x, this.groundHeightAt(x, z) - scaled.min.y, z - center.z)); model.updateMatrixWorld(true);
+    const bounds = new THREE.Box3().setFromObject(model); const footprint: GroundRect = { minX: bounds.min.x - (kind === 'tree' ? .48 : .16), maxX: bounds.max.x + (kind === 'tree' ? .48 : .16), minZ: bounds.min.z - (kind === 'tree' ? .48 : .16), maxZ: bounds.max.z + (kind === 'tree' ? .48 : .16) }; if (kind !== 'building' && (!this.plantingAreas.some(area => footprint.minX >= area.minX && footprint.maxX <= area.maxX && footprint.minZ >= area.minZ && footprint.maxZ <= area.maxZ) || this.buildingFootprints.some(blocked => !(footprint.maxX <= blocked.minX || footprint.minX >= blocked.maxX || footprint.maxZ <= blocked.minZ || footprint.minZ >= blocked.maxZ)))) { this.professionalPlacementRejected++; return false; }
+    model.traverse(child => { child.userData.owner = owner; child.userData.professionalAsset = kind; }); model.userData.owner = owner; model.userData.professionalAsset = kind; this.professionalLayer.add(model); this.professionalPickers.push(model); this.professionalLowestY = Math.min(this.professionalLowestY, bounds.min.y); if (kind === 'building') { this.professionalBuildings++; this.buildingFootprints.push(footprint); } else if (kind === 'tree') this.professionalTrees++; else this.professionalGrass++; if (kind !== 'building') { this.buildingFootprints.push(footprint); this.vegetationFootprints.push(footprint); } return true;
+  }
+  private async installProfessionalAssets(revision: number, objects: PlacedObject[]): Promise<void> {
+    const { apartments: apartment, factory } = this.professionalBuildingTargets(objects); const tasks: Promise<void>[] = [];
+    const add = async (asset: ProfessionalModel, kind: 'building' | 'tree' | 'grass', owner: string | null, x: number, z: number, width: number, depth: number, height: number, rotation = 0, pitch = 0, retain?: (name: string) => boolean): Promise<boolean> => { const model = await this.professionalAssets.clone(asset, retain); if (!acceptsSceneAsset(revision, this.assetRevision, this.disposed)) return false; return this.placeProfessionalAsset(model, kind, owner, x, z, width, depth, height, rotation, pitch); };
+    // Poly Haven's facade packs are modular libraries, not ready-made buildings. A small, intact entrance-and-window stack is used as a real facade overlay; the catalogue arrangement is never rendered as a pseudo-building.
+    const apartmentFacade = new Set(['wall_door_centered_large_01', 'wall_window_centered_large_01', 'wall_window_centered_large_02', 'wall_window_centered_large_03']);
+    const factoryFacade = new Set(['wall_door_garage_door_01', 'wall_window_centered_medium_01', 'wall_window_centered_medium_02', 'wall_window_centered_medium_03']);
+    if (apartment) tasks.push(add('apartments', 'building', apartment.id, apartment.x - 1.7, apartment.z - 4.82, 2.5, .32, Math.max(3.6, apartment.kind === 'file' ? fileHeight(apartment.bytes) + 1.1 : 4.4), 0, 0, name => apartmentFacade.has(name)).then(() => undefined));
+    if (factory && factory.id !== apartment?.id) tasks.push(add('factory', 'building', factory.id, factory.x - 1.45, factory.z - 4.72, 2.65, .34, Math.max(3.8, factory.kind === 'file' ? fileHeight(factory.bytes) + 1.2 : 4.7), 0, 0, name => factoryFacade.has(name)).then(() => undefined));
+    tasks.push((async () => { const candidates = this.plantingAreas.flatMap(area => [[area.minX + 2.35, area.minZ + 2.35], [area.maxX - 2.35, area.maxZ - 2.35], [area.minX + 2.15, area.maxZ - 2.1], [area.maxX - 2.1, area.minZ + 2.15]] as [number, number][]); const tree = chooseGroundCandidate(this.plantingAreas, this.buildingFootprints, candidates, 2.05); if (tree) await add('tree', 'tree', null, tree[0], tree[1], 4.15, 4.15, 6.4); const shrub = chooseGroundCandidate(this.plantingAreas, this.buildingFootprints, candidates, 1.25); if (shrub) await add('shrub', 'tree', null, shrub[0], shrub[1], 2.45, 2.45, 2.7, .45); const grass = chooseGroundCandidate(this.plantingAreas, this.buildingFootprints, candidates, 1.1); if (grass) await add('grass', 'grass', null, grass[0], grass[1], 2.6, 2.35, .82); })());
+    const results = await Promise.allSettled(tasks); if (this.disposed || revision !== this.assetRevision) return; this.professionalAssetFailures = results.filter(result => result.status === 'rejected').length; this.refreshPlacementDebug(); this.host.dataset.professionalPlacementRejected = String(this.professionalPlacementRejected); this.host.dataset.professionalAssets = this.professionalAssetFailures ? 'partial-fallback' : 'ready'; this.requestRender();
+  }
+  private canvasTexture(surface: Surface, color: string, data = false): THREE.CanvasTexture { const canvas = document.createElement('canvas'); canvas.width = canvas.height = 128; const ctx = canvas.getContext('2d')!; if (data) { ctx.fillStyle = '#8080ff'; ctx.fillRect(0, 0, 128, 128); } else { ctx.fillStyle = color; ctx.fillRect(0, 0, 128, 128); if (surface === 'brick') { ctx.fillStyle = '#d5c0aa'; for (let y = 0; y < 128; y += 16) { ctx.fillRect(0, y, 128, 2); for (let x = (y / 16 % 2) * 12; x < 128; x += 24) ctx.fillRect(x, y, 2, 16); } } else if (surface === 'asphalt' || surface === 'concrete') { for (let i = 0; i < 310; i++) { const shade = 70 + (i * 29 % 70); ctx.fillStyle = `rgba(${shade},${shade},${shade},${surface === 'asphalt' ? .22 : .13})`; ctx.fillRect((i * 47) % 128, (i * 31) % 128, 1 + i % 2, 1 + i % 2); } } else if (surface === 'grass') { for (let i = 0; i < 480; i++) { const hue = i % 5 === 0 ? 'rgba(98,76,47,.18)' : i % 3 ? 'rgba(207,220,159,.12)' : 'rgba(41,73,38,.16)'; ctx.fillStyle = hue; ctx.fillRect((i * 37) % 128, (i * 71) % 128, 1 + i % 3, 1 + (i * 3) % 2); } } else if (surface === 'metal' || surface === 'roof') { ctx.fillStyle = 'rgba(255,255,255,.13)'; for (let x = 0; x < 128; x += 12) ctx.fillRect(x, 0, 2, 128); } else if (surface === 'wood') { ctx.strokeStyle = 'rgba(46,25,12,.35)'; ctx.lineWidth = 2; for (let y = 7; y < 128; y += 13) { ctx.beginPath(); ctx.moveTo(0, y); ctx.bezierCurveTo(34, y - 4, 79, y + 4, 128, y - 2); ctx.stroke(); } } } const texture = new THREE.CanvasTexture(canvas); texture.wrapS = texture.wrapT = THREE.RepeatWrapping; texture.repeat.set(surface === 'brick' ? 3 : surface === 'grass' ? 3.2 : 2, surface === 'brick' ? 4 : surface === 'grass' ? 3.2 : 2); texture.colorSpace = data ? THREE.NoColorSpace : THREE.SRGBColorSpace; return texture; }
+  private applyProfessionalSurface(surface: ProfessionalSurface): void { if (this.professionalSurfaceRequests.has(surface)) return; this.professionalSurfaceRequests.add(surface); void this.professionalAssets.surface(surface).then(maps => { const bundle = this.materials.get(surface); if (!bundle || this.disposed) return; for (const texture of bundle.textures) texture.dispose(); bundle.textures = []; const material = bundle.material; material.map = maps.map; material.normalMap = maps.normalMap; material.roughnessMap = maps.armMap; material.metalnessMap = maps.armMap; material.roughness = .76; material.metalness = surface === 'asphalt' ? .03 : .08; material.normalScale.set(.42, .42); maps.map.repeat.set(surface === 'brick' ? 2.7 : surface === 'asphalt' ? 3.8 : 2.4, surface === 'brick' ? 3.4 : surface === 'asphalt' ? 3.8 : 2.4); maps.normalMap.repeat.copy(maps.map.repeat); maps.armMap.repeat.copy(maps.map.repeat); material.needsUpdate = true; this.requestRender(); }).catch(() => { this.professionalAssetFailures++; }); }
+  private material(surface: Surface): THREE.MeshStandardMaterial { const existing = this.materials.get(surface); if (existing) return existing.material; const semantic = surface.startsWith('type-') ? this.theme!.types[surface.slice(5) as FileType] : undefined; const spec = semantic ? { color: semantic, roughness: .57, metalness: .12 } : surfacePalette[surface as Exclude<Surface, `type-${FileType}`>]; const map = this.canvasTexture(surface, spec.color); const roughness = this.canvasTexture(surface, '#b8b8b8'); roughness.colorSpace = THREE.NoColorSpace; const normal = this.canvasTexture(surface, '#8080ff', true); const material = new THREE.MeshStandardMaterial({ color: spec.color, map, roughnessMap: roughness, normalMap: normal, roughness: spec.roughness, metalness: spec.metalness, normalScale: new THREE.Vector2(.24, .24), side: surface === 'grassBlade' ? THREE.DoubleSide : THREE.FrontSide }); if (surface === 'glass') { material.emissive.set('#2d3934'); material.emissiveIntensity = .07; } if (surface === 'grassBlade' || surface === 'leaf' || surface === 'leafDark') { material.emissive.set('#243b1d'); material.emissiveIntensity = .16; } if (surface === 'activity') material.emissive.set('#b65017'); this.materials.set(surface, { material, textures: [map, roughness, normal] }); if (surface === 'brick' || surface === 'concrete' || surface === 'asphalt') this.applyProfessionalSurface(surface); return material; }
+  private vegetationGeometry(shape: Part['shape']): THREE.BufferGeometry {
+    if (shape === 'foliage') return new THREE.SphereGeometry(1, 10, 7);
+    if (shape === 'branch') return new THREE.CylinderGeometry(.46, 1, 1, 6).translate(0, .5, 0);
+    if (shape === 'grassClump') { const positions: number[] = []; for (let blade = 0; blade < 7; blade++) { const angle = blade * Math.PI * 2 / 7, width = .095 + (blade % 3) * .018, x = Math.cos(angle) * .045, z = Math.sin(angle) * .045, tx = Math.cos(angle + .52) * (.16 + (blade % 2) * .045), tz = Math.sin(angle + .52) * (.16 + (blade % 2) * .045); positions.push(x - width, 0, z, x + width, 0, z, tx, 1, tz); } const geometry = new THREE.BufferGeometry(); geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3)); geometry.computeVertexNormals(); return geometry; }
+    return new THREE.BoxGeometry(1, 1, 1);
+  }
+  private bake(): void { this.vegetation = []; const grouped = new Map<string, Part[]>(); for (const part of this.parts) { const key = `${part.shape}:${part.surface}:${part.fine}`; const list = grouped.get(key) ?? []; list.push(part); grouped.set(key, list); } for (const list of grouped.values()) { const first = list[0]!; const geometry = first.shape === 'roof' ? new THREE.ConeGeometry(1, 1, 4).rotateY(Math.PI / 4) : first.shape === 'round' ? new THREE.CylinderGeometry(1, 1, 1, 12) : this.vegetationGeometry(first.shape); const mesh = new THREE.InstancedMesh(geometry, this.material(first.surface), list.length); const transform = new THREE.Object3D(); list.forEach((part, index) => { transform.position.set(part.x, part.y, part.z); transform.scale.set(part.w, part.h, part.d); if (part.rotation) transform.rotation.set(...part.rotation); else transform.rotation.set(0, 0, 0); transform.updateMatrix(); mesh.setMatrixAt(index, transform.matrix); if (part.wind) this.vegetation.push({ mesh, index, position: new THREE.Vector3(part.x, part.y, part.z), scale: new THREE.Vector3(part.w, part.h, part.d), phase: part.phase ?? 0, kind: part.wind, rotation: part.rotation }); }); mesh.userData.owners = list.map(part => part.owner); mesh.userData.fine = first.fine; mesh.instanceMatrix.needsUpdate = true; mesh.castShadow = first.shape !== 'grassClump'; mesh.receiveShadow = first.shape !== 'grassClump'; if (first.wind) mesh.frustumCulled = false; this.content.add(mesh); this.batches.push(mesh); } }
+  setSelection(id: string | null): void { this.selected = id; this.updateMarker(); }
+  private updateMarker(): void { for (const child of [...this.marker.children]) { if (child instanceof THREE.Line) { child.geometry.dispose(); (child.material as THREE.Material).dispose(); } this.marker.remove(child); } const object = this.objects.find(o => o.id === (this.selected ?? this.hovered) || o.members.includes(this.selected ?? '')); if (object && this.theme) { const { x, z } = object; const points = [[-7.25, -6.65], [7.25, -6.65], [7.25, 6.65], [-7.25, 6.65]].map(([dx, dz]) => new THREE.Vector3(x + dx!, .74, z + dz!)); this.marker.add(new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: this.theme.selection }))); } for (const label of this.labels) { label.button.dataset.selected = String(label.id === object?.id); label.button.dataset.priority = String(label.id === object?.id || label.kind !== 'file'); } this.requestRender(); }
+  getCamera(): CameraState { return { position: this.camera.position.toArray(), target: this.controls.target.toArray(), zoom: this.camera.zoom }; }
+  isOverview(): boolean { return this.viewMode === 'overview'; }
+  private viewportSpan(): { width: number; height: number } { const height = (this.camera.top - this.camera.bottom) / this.camera.zoom; return { height, width: height * Math.max(.5, this.host.clientWidth / Math.max(1, this.host.clientHeight)) }; }
+  private overviewZoom(): number { const ratio = Math.max(.5, this.host.clientWidth / Math.max(1, this.host.clientHeight)); const bounds = this.islandBounds ?? { minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ }; const required = Math.max(bounds.maxZ - bounds.minZ, (bounds.maxX - bounds.minX) / ratio) * 1.16; return Math.max(.32, Math.min(2.2, (this.camera.top - this.camera.bottom) / required)); }
+  private exploreMinZoom(): number { return Math.max(.72, Math.min(2.5, this.overviewZoom() * 1.38)); }
+  private exploreDefaultZoom(): number { const ratio = Math.max(.5, this.host.clientWidth / Math.max(1, this.host.clientHeight)); const required = Math.max((this.maxZ - this.minZ) * .72, ((this.maxX - this.minX) / ratio) * .78); return Math.max(this.exploreMinZoom() * 1.24, Math.min(3.35, (this.camera.top - this.camera.bottom) / Math.max(12, required))); }
+  private clampCamera(): void { if (this.clampingCamera || !this.objects.length) return; this.clampingCamera = true; const minZoom = this.viewMode === 'overview' ? this.overviewZoom() : this.exploreMinZoom(); const maxZoom = this.viewMode === 'overview' ? Math.max(minZoom, this.exploreMinZoom()) : 4.1; this.camera.zoom = Math.max(minZoom, Math.min(maxZoom, this.camera.zoom)); this.camera.updateProjectionMatrix(); const span = this.viewportSpan(); const bounds = this.viewMode === 'overview' ? this.islandBounds ?? { minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ } : { minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ }; const paddingX = Math.min((bounds.maxX - bounds.minX) / 2, this.viewMode === 'overview' ? span.width * .06 : Math.max(2.5, span.width * .28)); const paddingZ = Math.min((bounds.maxZ - bounds.minZ) / 2, this.viewMode === 'overview' ? span.height * .06 : Math.max(2.5, span.height * .28)); const lowerX = bounds.minX + paddingX, upperX = bounds.maxX - paddingX, lowerZ = bounds.minZ + paddingZ, upperZ = bounds.maxZ - paddingZ; const targetX = lowerX > upperX ? this.centerX : Math.max(lowerX, Math.min(upperX, this.controls.target.x)); const targetZ = lowerZ > upperZ ? this.centerZ : Math.max(lowerZ, Math.min(upperZ, this.controls.target.z)); const dx = targetX - this.controls.target.x, dz = targetZ - this.controls.target.z; if (dx || dz) { this.controls.target.x += dx; this.controls.target.z += dz; this.camera.position.x += dx; this.camera.position.z += dz; } this.clampingCamera = false; }
+  private cameraChanged = (): void => { this.clampCamera(); this.requestRender(); };
+  private visibilityChanged = (): void => { this.lastMotionAt = performance.now(); if (!document.hidden) { this.requestRender(); this.scheduleEnvironment(); } };
+  private environmentActive(): boolean { return !document.hidden && !matchMedia('(prefers-reduced-motion: reduce)').matches && (this.environmentMotion || this.windBlend > .002); }
+  setEnvironmentMotion(enabled: boolean): void { this.environmentMotion = enabled && !matchMedia('(prefers-reduced-motion: reduce)').matches; this.windTarget = this.environmentMotion ? 1 : 0; this.host.dataset.environmentMotion = String(this.environmentMotion); this.lastMotionAt = performance.now(); this.requestRender(); this.scheduleEnvironment(); }
+  private updateEnvironment(now: number): void { const delta = Math.min(.05, Math.max(0, (now - this.lastMotionAt) / 1000)); this.lastMotionAt = now; if (document.hidden || !delta) return; this.windBlend += (this.windTarget - this.windBlend) * Math.min(1, delta * 6.5); if (this.windBlend < .002 && !this.environmentMotion) this.windBlend = 0; this.environmentTime += delta; const waterTime = this.waterMaterial?.uniforms.time, waterMotion = this.waterMaterial?.uniforms.motion; if (waterTime && waterMotion) { waterTime.value = this.environmentTime; waterMotion.value = this.windBlend; } if (!this.vegetation.length) return; const gust = .64 + .36 * Math.sin(this.environmentTime * .72) + .12 * Math.sin(this.environmentTime * 1.7 + .8); const transform = new THREE.Object3D(); for (const vegetation of this.vegetation) { const scale = vegetation.kind === 'grass' ? .29 : vegetation.kind === 'leaf' ? .17 : .075; const tempo = vegetation.kind === 'grass' ? 1.65 : vegetation.kind === 'leaf' ? 1.15 : .72; const phase = this.environmentTime * tempo + vegetation.phase; const bend = this.windBlend * gust * scale * (0.42 + .58 * Math.sin(phase)); const ripple = this.windBlend * scale * .34 * Math.sin(phase * 1.73 + vegetation.position.x * .41 + vegetation.position.z * .29); transform.position.copy(vegetation.position); transform.scale.copy(vegetation.scale); const base = vegetation.rotation ?? [0, 0, 0]; transform.rotation.set(base[0] + bend * .56, base[1], base[2] - bend - ripple); transform.updateMatrix(); vegetation.mesh.setMatrixAt(vegetation.index, transform.matrix); vegetation.mesh.instanceMatrix.needsUpdate = true; } }
+  private scheduleEnvironment(): void { if (!this.environmentActive() || this.environmentTimer || this.frame) return; const delay = Math.max(0, 1000 / 30 - (performance.now() - this.lastMotionAt)); this.environmentTimer = window.setTimeout(() => { this.environmentTimer = 0; this.requestRender(); }, delay); }
+  restoreCamera(state?: CameraState, animate = false, fitAll = false): void { if (fitAll) { if (this.viewMode !== 'overview') this.lastExplore = this.getCamera(); this.viewMode = 'overview'; } else this.viewMode = 'explore'; const zoom = fitAll ? this.overviewZoom() : this.exploreDefaultZoom(); const initial = { position: [this.centerX + 57, 65, this.centerZ + 66] as [number, number, number], target: [this.centerX, 0, this.centerZ] as [number, number, number], zoom }; const next = state ?? initial; if (animate && !matchMedia('(prefers-reduced-motion: reduce)').matches) { this.transition = { from: this.getCamera(), to: next, start: performance.now() }; this.requestRender(); return; } this.transition = undefined; this.camera.position.fromArray(next.position); this.controls.target.fromArray(next.target); this.camera.zoom = next.zoom; this.camera.updateProjectionMatrix(); this.controls.update(); this.clampCamera(); this.requestRender(); }
+  fitAll(): void { this.restoreCamera(undefined, false, true); }
+  returnToExplore(): void { if (this.viewMode !== 'overview') return; const saved = this.lastExplore; this.viewMode = 'explore'; this.restoreCamera(saved, true); }
+  focus(id: string): void { const object = this.objects.find(o => o.id === id || o.members.includes(id)); if (!object) return; if (this.viewMode === 'overview') this.lastExplore = this.getCamera(); this.viewMode = 'explore'; const offset = this.camera.position.clone().sub(this.controls.target); const target: CameraState = { position: [object.x + 6 + offset.x, offset.y, object.z + offset.z], target: [object.x + 6, 0, object.z], zoom: Math.max(this.exploreMinZoom() * 1.2, 1.9) }; if (!matchMedia('(prefers-reduced-motion: reduce)').matches) this.transition = { from: this.getCamera(), to: target, start: performance.now() }; else { this.camera.position.fromArray(target.position); this.controls.target.fromArray(target.target); this.camera.zoom = target.zoom; this.camera.updateProjectionMatrix(); this.controls.update(); this.clampCamera(); } this.requestRender(); }
+  zoom(factor: number): void { this.transition = undefined; if (this.viewMode === 'overview' && factor > 1) { this.lastExplore = this.getCamera(); this.viewMode = 'explore'; } this.camera.zoom *= factor; this.camera.updateProjectionMatrix(); this.clampCamera(); this.requestRender(); }
+  private pick(event: PointerEvent | MouseEvent): string | null { const rect = this.renderer.domElement.getBoundingClientRect(); this.ray.setFromCamera(new THREE.Vector2((event.clientX - rect.left) / rect.width * 2 - 1, -(event.clientY - rect.top) / rect.height * 2 + 1), this.camera); for (const hit of this.ray.intersectObjects(this.batches)) { const owner = hit.object.userData.owners?.[hit.instanceId ?? -1]; if (owner) return owner as string; } for (const hit of this.ray.intersectObjects(this.professionalPickers, true)) { let current: THREE.Object3D | null = hit.object; while (current) { const owner = current.userData.owner; if (typeof owner === 'string') return owner; current = current.parent; } } return null; }
+  private pointerDown = (event: PointerEvent): void => { this.pointerStart = { x: event.clientX, y: event.clientY }; this.moved = false; };
+  private pointerMove = (event: PointerEvent): void => { if (Math.hypot(event.clientX - this.pointerStart.x, event.clientY - this.pointerStart.y) > 5) this.moved = true; if (event.buttons) return; const id = this.pick(event); const object = this.objects.find(o => o.id === id || o.members.includes(id ?? '')); this.renderer.domElement.title = object ? `${object.name} · ${formatBytes(object.bytes)}${object.kind === 'group' ? ` · ${object.count} 个文件` : ''}` : ''; if (id !== this.hovered) { this.hovered = id; this.renderer.domElement.style.cursor = id ? 'pointer' : 'grab'; this.updateMarker(); } };
+  private pointerUp = (event: PointerEvent): void => { if (event.button === 0 && !this.moved) this.onSelect(this.pick(event)); };
+  private doubleClick = (event: MouseEvent): void => { if (this.moved) return; const id = this.pick(event); if (this.objects.find(o => o.id === id)?.kind === 'directory' && id) this.onEnter(id); };
+  private contextLost = (event: Event): void => { event.preventDefault(); this.lost = true; this.host.dataset.sceneState = 'lost'; this.onFailure('图形连接已中断，可继续使用目录列表，或重新加载沙盘。'); };
+  private contextRestored = (): void => { this.lost = false; this.host.dataset.sceneState = 'ready'; this.onFailure(''); this.requestRender(); };
+  private requestRender = (): void => { if (this.disposed || this.frame || this.lost || document.hidden) return; this.frame = requestAnimationFrame(now => { this.frame = 0; if (this.disposed) return; this.updateEnvironment(now); if (this.transition) { const { from, to, start } = this.transition; const t = Math.min(1, (now - start) / 260), eased = 1 - (1 - t) ** 3; this.camera.position.lerpVectors(new THREE.Vector3(...from.position), new THREE.Vector3(...to.position), eased); this.controls.target.lerpVectors(new THREE.Vector3(...from.target), new THREE.Vector3(...to.target), eased); this.camera.zoom = from.zoom + (to.zoom - from.zoom) * eased; this.controls.update(); this.clampCamera(); if (t === 1) this.transition = undefined; } for (const batch of this.batches) batch.visible = !batch.userData.fine || this.camera.zoom > .75; this.renderer.render(this.scene, this.camera); const width = this.host.clientWidth, height = this.host.clientHeight; const occupied: { x: number; y: number }[] = []; for (const label of this.labels) { const v = label.position.clone().project(this.camera); const x = (v.x + 1) * width / 2, y = (1 - v.y) * height / 2; const collision = occupied.some(p => Math.abs(p.x - x) < 96 && Math.abs(p.y - y) < 28); const priority = label.button.dataset.priority === 'true'; const visible = priority && v.z < 1 && x > 40 && x < width - 40 && y > 25 && y < height - 45 && !collision; label.button.hidden = !visible; if (visible) occupied.push({ x, y }); label.button.style.transform = `translate(${x}px, ${y}px) translate(-50%, 0)`; const pick = label.position.clone(); pick.z -= 6.4; pick.y = 2; pick.project(this.camera); label.button.dataset.pickX = String((pick.x + 1) * width / 2); label.button.dataset.pickY = String((1 - pick.y) * height / 2); } const textureCount = [...this.materials.values()].reduce((sum, bundle) => sum + bundle.textures.length, 0); this.host.dataset.sceneState = 'ready'; this.host.dataset.transition = String(Boolean(this.transition)); this.host.dataset.camera = JSON.stringify(this.getCamera()); this.host.dataset.cameraMode = this.viewMode; this.host.dataset.cameraBounds = JSON.stringify({ minX: this.minX, maxX: this.maxX, minZ: this.minZ, maxZ: this.maxZ }); this.host.dataset.drawCalls = String(this.renderer.info.render.calls); this.host.dataset.triangles = String(this.renderer.info.render.triangles); this.host.dataset.visibleObjects = String(this.objects.length); this.host.dataset.treeCount = String(this.treeCount); this.host.dataset.foliageInstances = String(this.vegetation.filter(item => item.kind === 'leaf').length); this.host.dataset.grassInstances = String(this.grassCount); this.host.dataset.professionalBuildings = String(this.professionalBuildings); this.host.dataset.professionalTrees = String(this.professionalTrees); this.host.dataset.professionalGrass = String(this.professionalGrass); this.host.dataset.professionalAssetFailures = String(this.professionalAssetFailures); this.host.dataset.professionalPlacementRejected = String(this.professionalPlacementRejected); this.host.dataset.professionalLowestY = Number.isFinite(this.professionalLowestY) ? String(this.professionalLowestY) : ''; this.host.dataset.windBlend = String(this.windBlend); this.host.dataset.textureCount = String(textureCount); this.host.dataset.textureBytes = String(textureCount * 128 * 128 * 4); if (this.transition) this.requestRender(); else this.scheduleEnvironment(); }); };
+  private clearContent(): void { for (const batch of this.batches) { batch.geometry.dispose(); batch.dispose(); } this.content.clear(); this.batches = []; this.vegetation = []; this.treeCount = 0; this.grassCount = 0; this.parts = []; for (const bundle of this.materials.values()) { bundle.material.dispose(); for (const texture of bundle.textures) texture.dispose(); } this.materials.clear(); this.professionalSurfaceRequests.clear(); for (const label of this.labels) label.button.remove(); this.labels = []; }
+  dispose(): void { this.disposed = true; ++this.assetRevision; cancelAnimationFrame(this.frame); if (this.environmentTimer) clearTimeout(this.environmentTimer); this.observer.disconnect(); this.controls.removeEventListener('change', this.cameraChanged); this.controls.dispose(); this.clearContent(); this.clearProfessionalAssets(); this.clearIsland(); this.selected = null; this.hovered = null; this.updateMarker(); const canvas = this.renderer.domElement; canvas.removeEventListener('pointerdown', this.pointerDown); canvas.removeEventListener('pointermove', this.pointerMove); canvas.removeEventListener('pointerup', this.pointerUp); canvas.removeEventListener('dblclick', this.doubleClick); canvas.removeEventListener('webglcontextlost', this.contextLost); canvas.removeEventListener('webglcontextrestored', this.contextRestored); document.removeEventListener('visibilitychange', this.visibilityChanged); this.scene.traverse(object => { if (object instanceof THREE.DirectionalLight) object.shadow.dispose(); }); this.scene.environment = null; this.environmentMap?.dispose(); this.professionalAssets.dispose(); this.renderer.dispose(); canvas.remove(); }
 }

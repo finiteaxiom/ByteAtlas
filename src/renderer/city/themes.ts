@@ -6,7 +6,7 @@ export interface CityTheme {
 export const warmTheme: CityTheme = {
   id: 'warm', ground: '#ddd8b7', road: '#e9e3d3', plot: '#ede9d9', foliage: '#78965a',
   roof: '#bb7961', wall: '#f6eed9', ink: '#344d43', selection: '#d78339', sky: '#f0eee3',
-  types: { code: '#80a6a0', document: '#e1c183', image: '#ce947a', archive: '#8d9db1', other: '#aea6be' }
+  types: { code: '#80a6a0', document: '#e1c183', image: '#ce947a', media: '#b98ba3', archive: '#8d9db1', other: '#aea6be' }
 };
 // Palette variant validates the theme boundary; this is not the future sci-fi theme.
 export const duskTheme: CityTheme = { ...warmTheme, id: 'dusk', sky: '#e9dfd2', ground: '#d8c6aa',

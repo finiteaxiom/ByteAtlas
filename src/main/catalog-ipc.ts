@@ -12,8 +12,12 @@ export function registerCatalog(backend: BackendHost, getWindow: () => BrowserWi
     } | undefined;
     let choosing = false;
     ipcMain.handle(CATALOG_CHANNEL, async (event, ...args: unknown[]): Promise<CatalogResult> => {
+        const sender = event.sender;
+        // Renderer interval cleanup can race the BrowserWindow teardown. Do not read senderFrame after Chromium has destroyed it.
+        if (sender.isDestroyed())
+            return catalogError('', 'BAD_REQUEST');
         const window = getWindow(), source = event.senderFrame, request = args[0];
-        if (!window || event.sender !== window.webContents || !source || source !== event.sender.mainFrame || !isTrustedRendererUrl(source.url, url) || args.length !== 1 || !isCatalogRequest(request))
+        if (!window || window.isDestroyed() || sender !== window.webContents || !source || source !== sender.mainFrame || !isTrustedRendererUrl(source.url, url) || args.length !== 1 || !isCatalogRequest(request))
             return catalogError('', 'BAD_REQUEST');
         try {
             let data: unknown;

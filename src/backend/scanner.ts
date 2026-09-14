@@ -4,7 +4,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import type { FileType } from '../shared/world/model';
 import { IndexStore } from './index-store';
 import { checkedPath, within } from './path-safety';
-export function fileType(name: string): FileType { const ext = extname(name).toLowerCase(); return /\.(ts|tsx|js|jsx|py|json|html|css|rs|cpp|cs|go)$/.test(ext) ? 'code' : /\.(png|jpg|jpeg|gif|svg|webp)$/.test(ext) ? 'image' : /\.(zip|7z|rar|gz|tar)$/.test(ext) ? 'archive' : /\.(txt|md|pdf|docx|xlsx|pptx|csv)$/.test(ext) ? 'document' : 'other'; }
+export function fileType(name: string): FileType { const ext = extname(name).toLowerCase(); return /\.(ts|tsx|js|jsx|py|json|html|css|rs|cpp|cs|go)$/.test(ext) ? 'code' : /\.(png|jpg|jpeg|gif|svg|webp)$/.test(ext) ? 'image' : /\.(mp4|mov|mkv|webm|avi|mp3|wav|flac|m4a|ogg)$/.test(ext) ? 'media' : /\.(zip|7z|rar|gz|tar)$/.test(ext) ? 'archive' : /\.(txt|md|pdf|docx|xlsx|pptx|csv)$/.test(ext) ? 'document' : 'other'; }
 export class Scanner {
     private active?: {
         worldId: string;

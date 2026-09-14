@@ -3,7 +3,7 @@ import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, describe, expect, it } from 'vitest';
 import { IndexStore } from '../src/backend/index-store';
-import { Scanner } from '../src/backend/scanner';
+import { Scanner, fileType } from '../src/backend/scanner';
 import { checkedPath, within } from '../src/backend/path-safety';
 import { isCatalogRequest } from '../src/shared/contracts/catalog';
 const fixtures: {
@@ -25,6 +25,11 @@ async function complete(scanner: Scanner, store: IndexStore, id: string) { await
         return world;
     await delay(10);
 } throw Error('scan timeout'); }
+it('classifies audio and video extensions without reading file content', () => {
+    expect(fileType('walkthrough.MP4')).toBe('media');
+    expect(fileType('ambience.wav')).toBe('media');
+    expect(fileType('notes.md')).toBe('document');
+});
 describe('real catalog integrity', () => {
     it('discloses application data exclusions and never indexes its own storage', async () => {
         const { root, store, scanner } = await fixture();

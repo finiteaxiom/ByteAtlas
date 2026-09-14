@@ -16,7 +16,9 @@ const qaDirectory = process.argv.find(arg => arg.startsWith('--qa-root='))?.slic
 const benchmarkDirectory = process.argv.find(arg => arg.startsWith('--benchmark-root='))?.slice('--benchmark-root='.length);
 const desktopCatalogBenchmarkDirectory = process.argv.find(arg => arg.startsWith('--desktop-catalog-benchmark-root='))?.slice('--desktop-catalog-benchmark-root='.length);
 const migrationAuditDirectory = process.argv.find(arg => arg.startsWith('--migration-audit-root='))?.slice('--migration-audit-root='.length);
-const isolatedDirectory = qaDirectory ?? benchmarkDirectory ?? desktopCatalogBenchmarkDirectory ?? migrationAuditDirectory;
+const motionCaptureDirectory = process.argv.find(arg => arg.startsWith('--motion-capture-root='))?.slice('--motion-capture-root='.length);
+const vegetationCaptureDirectory = process.argv.find(arg => arg.startsWith('--vegetation-capture-root='))?.slice('--vegetation-capture-root='.length);
+const isolatedDirectory = qaDirectory ?? benchmarkDirectory ?? desktopCatalogBenchmarkDirectory ?? migrationAuditDirectory ?? motionCaptureDirectory ?? vegetationCaptureDirectory;
 if (isolatedDirectory) {
   if (!isAbsolute(isolatedDirectory)) throw new Error('INVALID_BENCHMARK_ROOT');
   mkdirSync(isolatedDirectory, { recursive: true });
@@ -43,7 +45,7 @@ const backend = new BackendHost();
 let window: BrowserWindow | undefined;
 let shuttingDown = false;
 const startupFailures: StartupFailure[] = [];
-const startupEvidenceDirectory = smokeDirectory ?? benchmarkDirectory ?? desktopCatalogBenchmarkDirectory ?? qaDirectory ?? migrationAuditDirectory;
+const startupEvidenceDirectory = smokeDirectory ?? benchmarkDirectory ?? desktopCatalogBenchmarkDirectory ?? qaDirectory ?? migrationAuditDirectory ?? motionCaptureDirectory ?? vegetationCaptureDirectory;
 let startupDialogShown = false;
 const rendererFile = join(__dirname, '../renderer/index.html');
 const devUrl = !app.isPackaged ? process.env.ELECTRON_RENDERER_URL : undefined;
@@ -84,8 +86,11 @@ app.on('child-process-gone', (_event, details) => {
 
 function registerHealth(): void {
   ipcMain.handle(HEALTH_CHANNEL, (event, ...args: unknown[]): HealthResult => {
+    const sender = event.sender;
+    if (sender.isDestroyed())
+      return { ok: false, error: { code: 'BAD_REQUEST', message: '请求无效。', retryable: false } };
     const source = event.senderFrame;
-    if (!window || event.sender !== window.webContents || !source || source !== event.sender.mainFrame ||
+    if (!window || window.isDestroyed() || sender !== window.webContents || !source || source !== sender.mainFrame ||
         !isTrustedRendererUrl(source.url, rendererUrl) || !isEmptyRequest(args)) {
       return { ok: false, error: { code: 'BAD_REQUEST', message: '请求无效。', retryable: false } };
     }
@@ -103,7 +108,7 @@ async function createWindow(): Promise<BrowserWindow> {
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true, sandbox: true, nodeIntegration: false, webviewTag: false,
-      offscreen: Boolean(smokeDirectory), backgroundThrottling: !smokeDirectory
+      offscreen: Boolean(smokeDirectory), backgroundThrottling: !(smokeDirectory || benchmarkDirectory || motionCaptureDirectory || vegetationCaptureDirectory)
     }
   });
   window = result;
@@ -134,7 +139,15 @@ async function runSmoke(result: BrowserWindow): Promise<void> {
     }
     return { health, invalid, isolation, runtime: window.byteAtlas.getRuntimeInfo(), uiReady: document.querySelector('[data-status]')?.getAttribute('data-status') === 'ready' };
   })()`);
+  // Keep a non-selected reference frame beside the interaction screenshots.
+  // It uses the same isolated demo data and window as the subsequent city checks.
+  await captureSmoke(result.webContents, join(smokeDirectory!, 'town-overview.png'));
   const cityEvidence = await exerciseCity(result.webContents);
+  await captureSmoke(result.webContents, join(smokeDirectory!, 'explore-limit.png'));
+  await result.webContents.executeJavaScript(`(async()=>{document.querySelector('[data-action="fit"]').click();await new Promise(r=>setTimeout(r,180));})()`);
+  await captureSmoke(result.webContents, join(smokeDirectory!, 'overview.png'));
+  await result.webContents.executeJavaScript(`(async()=>{document.querySelector('[data-action="return-explore"]').click();await new Promise(r=>setTimeout(r,320));document.querySelector('[data-select="01-workshop"]').click();document.querySelector('[aria-label="放大"]').click();await new Promise(r=>setTimeout(r,120));})()`);
+  await captureSmoke(result.webContents, join(smokeDirectory!, 'near-detail.png'));
   const preferences = { ...evidence.runtime, nodeIntegration: evidence.isolation.require !== 'undefined' };
   const backendExitCode = 0;
   const report = {
@@ -183,6 +196,60 @@ async function runSmoke(result: BrowserWindow): Promise<void> {
   app.exit(passed ? 0 : 1);
 }
 
+async function runMotionCapture(result: BrowserWindow): Promise<void> {
+  const wait = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
+  const interact = (script: string): Promise<unknown> => result.webContents.executeJavaScript(`(async()=>{${script}})()`);
+  const capture = async (filename: string): Promise<void> => writeFileSync(join(motionCaptureDirectory!, filename), (await result.webContents.capturePage()).toPNG());
+  await interact(`document.querySelector('[data-demo]')?.click();for(let i=0;i<120&&document.querySelector('.canvas-host')?.dataset.sceneState!=='ready';i++)await new Promise(r=>setTimeout(r,50));if(document.querySelector('.canvas-host')?.dataset.sceneState!=='ready')throw Error('Motion capture scene did not become ready');`);
+  const timeline: { second: number; frame: string; action: string }[] = [];
+  const frame = async (second: number, filename: string, action: string, operation = ''): Promise<void> => {
+    if (operation) await interact(operation);
+    await capture(filename);
+    timeline.push({ second, frame: filename, action });
+    if (second < 20) await wait(4000);
+  };
+  await frame(0, 'motion-00-default.png', '环境动态开启的默认街区');
+  await frame(4, 'motion-04-motion-off.png', '关闭环境动态', `document.querySelector('[data-action="motion"]')?.click();`);
+  await frame(8, 'motion-08-explore-limit.png', '重新开启环境动态并连续缩小至探索边界', `document.querySelector('[data-action="motion"]')?.click();for(let i=0;i<12;i++)document.querySelector('[aria-label="缩小"]')?.click();`);
+  await frame(12, 'motion-12-overview.png', '进入俯瞰全部', `document.querySelector('[data-action="fit"]')?.click();await new Promise(r=>setTimeout(r,260));`);
+  await frame(16, 'motion-16-enter-return.png', '回到街区、进入素材仓库并返回', `document.querySelector('[data-action="return-explore"]')?.click();await new Promise(r=>setTimeout(r,280));document.querySelector('[data-enter="05-assets"]')?.click();await new Promise(r=>setTimeout(r,280));document.querySelector('[data-action="back"]')?.click();await new Promise(r=>setTimeout(r,280));`);
+  await frame(20, 'motion-20-search.png', '搜索并定位聚合成员', `const input=document.querySelector('[aria-label="搜索样例文件"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set?.call(input,'素材母版');input?.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,220));document.querySelector('[data-search-result="huge"]')?.click();await new Promise(r=>setTimeout(r,360));`);
+  writeFileSync(join(motionCaptureDirectory!, 'motion-capture.json'), JSON.stringify({ durationSeconds: 20, hardwareAcceleration: app.getGPUFeatureStatus(), timeline }, null, 2));
+  await backend.stop();
+  shuttingDown = true;
+  app.exit(0);
+}
+
+async function runVegetationCapture(result: BrowserWindow): Promise<void> {
+  const wait = (milliseconds: number): Promise<void> => new Promise(resolve => setTimeout(resolve, milliseconds));
+  const interact = (script: string): Promise<unknown> => result.webContents.executeJavaScript(`(async()=>{${script}})()`);
+  const capture = async (filename: string): Promise<void> => writeFileSync(join(vegetationCaptureDirectory!, filename), (await result.webContents.capturePage()).toPNG());
+  await interact(`document.querySelector('[data-demo]')?.click();for(let i=0;i<200&&(document.querySelector('.canvas-host')?.dataset.sceneState!=='ready'||!['ready','partial-fallback'].includes(document.querySelector('.canvas-host')?.dataset.professionalAssets??''));i++)await new Promise(r=>setTimeout(r,50));if(document.querySelector('.canvas-host')?.dataset.sceneState!=='ready')throw Error('Vegetation capture scene did not become ready');if(!['ready','partial-fallback'].includes(document.querySelector('.canvas-host')?.dataset.professionalAssets??''))throw Error('Professional assets did not settle');if(document.querySelector('.canvas-host')?.dataset.environmentMotion==='true')document.querySelector('[data-action="motion"]')?.click();await new Promise(r=>setTimeout(r,850));`);
+  const timeline: { second: number; frame: string; action: string; windBlend?: string }[] = [];
+  const frame = async (second: number, filename: string, action: string): Promise<void> => { await capture(filename); const windBlend = await result.webContents.executeJavaScript(`document.querySelector('.canvas-host')?.dataset.windBlend`); timeline.push({ second, frame: filename, action, windBlend: String(windBlend ?? '') }); };
+  await interact(`document.querySelector('[aria-label="显示植被放置边界"]')?.click();await new Promise(r=>setTimeout(r,240));`);
+  await frame(0, 'vegetation-00-placement-debug.png', '调试：红色建筑占地，绿色允许种植区');
+  await interact(`document.querySelector('[aria-label="显示植被放置边界"]')?.click();await new Promise(r=>setTimeout(r,120));`);
+  await frame(0, 'vegetation-00-off.png', '环境动态关闭：自然静止');
+  await wait(5000); await frame(5, 'vegetation-05-off.png', '关闭状态保持静止');
+  await interact(`document.querySelector('[data-action="motion"]')?.click();`);
+  await wait(2000); await frame(7, 'vegetation-07-on.png', '开启后两秒：默认探索风动');
+  await wait(2000); await frame(9, 'vegetation-09-on.png', '开启后四秒：默认探索风动');
+  await wait(2000); await frame(11, 'vegetation-11-on.png', '开启后六秒：默认探索风动');
+  await wait(2000); await frame(13, 'vegetation-13-on.png', '开启后八秒：默认探索风动');
+  await wait(2000); await frame(15, 'vegetation-15-on.png', '开启后十秒：默认探索风动');
+  await interact(`const input=document.querySelector('[aria-label="搜索样例文件"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value')?.set?.call(input,'空白花园');input?.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,260));document.querySelector('[data-search-result]')?.click();await new Promise(r=>setTimeout(r,360));for(let i=0;i<3;i++)document.querySelector('[aria-label="放大"]')?.click();await new Promise(r=>setTimeout(r,220));`);
+  await wait(1000); await frame(16, 'vegetation-16-close-on.png', '近景：树枝、叶簇与草叶风动');
+  await interact(`document.querySelector('[data-action="motion"]')?.click();`);
+  await wait(1200); await frame(18, 'vegetation-18-close-off.png', '近景：关闭后平滑回正');
+  await wait(2000); await frame(20, 'vegetation-20-off.png', '关闭后的自然静止');
+  const metrics = await result.webContents.executeJavaScript(`(()=>{const host=document.querySelector('.canvas-host');return {treeCount:host?.dataset.treeCount,foliageInstances:host?.dataset.foliageInstances,grassInstances:host?.dataset.grassInstances,professionalBuildings:host?.dataset.professionalBuildings,professionalTrees:host?.dataset.professionalTrees,professionalGrass:host?.dataset.professionalGrass,professionalAssets:host?.dataset.professionalAssets,professionalAssetFailures:host?.dataset.professionalAssetFailures,drawCalls:host?.dataset.drawCalls,triangles:host?.dataset.triangles,textureCount:host?.dataset.textureCount,windBlend:host?.dataset.windBlend};})()`);
+  writeFileSync(join(vegetationCaptureDirectory!, 'vegetation-capture.json'), JSON.stringify({ durationSeconds: 20, hardwareAcceleration: app.getGPUFeatureStatus(), timeline, metrics }, null, 2));
+  await backend.stop();
+  shuttingDown = true;
+  app.exit(0);
+}
+
 app.on('before-quit', (event) => {
   if (shuttingDown) return;
   event.preventDefault();
@@ -209,6 +276,8 @@ void app.whenReady().then(async () => {
   const result = await createWindow();
   if (qaDirectory) { result.show(); result.focus(); }
   if (smokeDirectory) await runSmoke(result);
+  if (motionCaptureDirectory) await runMotionCapture(result);
+  if (vegetationCaptureDirectory) await runVegetationCapture(result);
   if (benchmarkDirectory) { await benchmark(result, benchmarkDirectory); await backend.stop(); shuttingDown = true; app.exit(0); }
   if (desktopCatalogBenchmarkDirectory) { await benchmarkDesktopCatalog(result, backend, desktopCatalogBenchmarkDirectory); await backend.stop(); shuttingDown = true; app.exit(0); }
 }).catch(async (error: unknown) => {

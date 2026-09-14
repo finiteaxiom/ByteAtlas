@@ -23,6 +23,8 @@ export const fixture: Entry[] = [
   file('cover', '02-gallery', '日光中的小镇.png', '8388608', 'image'),
   file('garden', '02-gallery', '花园俯瞰.jpg', '3145728', 'image'),
   file('poster', '02-gallery', '城市探索器海报_最终确认版本_超长文件名展示.png', '16777216', 'image', .9),
+  file('walkthrough', '02-gallery', '街区漫游预告.mp4', '50331648', 'media', .7),
+  file('ambience', '02-gallery', '午后广场环境音.wav', '12582912', 'media', .32),
   file('guide', '03-library', '设计手册.pdf', '9437184', 'document'),
   file('notes', '03-library', '城市观察笔记.md', '18700', 'document'),
   file('empty-file', '03-library', '尚未开始的故事.txt', '0', 'document'),

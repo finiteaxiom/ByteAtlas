@@ -28,7 +28,9 @@
     "verify:listener-endurance": "node scripts/verify-listener-endurance.mjs",
     "benchmark:catalog": "node scripts/benchmark-catalog.mjs",
     "benchmark:desktop-catalog": "node scripts/benchmark-desktop-catalog.mjs",
-    "benchmark:graphics": "node scripts/benchmark-graphics.mjs"
+    "benchmark:graphics": "node scripts/benchmark-graphics.mjs",
+    "capture:motion": "node scripts/capture-motion.mjs",
+    "capture:vegetation": "node scripts/capture-vegetation.mjs"
   },
   "dependencies": {
     "react": "19.2.8",

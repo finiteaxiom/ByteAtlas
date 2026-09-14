@@ -2,6 +2,8 @@
 
 2026-09-10 本机实测；不是跨机器性能承诺。Windows 11 build 22631，i7-14650HX，约 16 GiB 内存，RTX 4060 Laptop。系统报告的磁盘型号为 Fanxiang S690 500GB 与 UMIS RPJYJ1T24MLR1HWY，未建立测试卷到物理磁盘的可靠映射。
 
+2026-09-13 的专业资源开发截图样板（`.artifacts/vegetation-capture-WQh43j/`）记录 115 draw calls、439,695 triangles、39 个当前场景程序化贴图计数；该计数尚不含 glTF/PBR loader 的独立纹理集合，故不能作为完整显存结论。它是实际硬件窗口的资源加载/画面证据，不是帧时间基准；需在专业模型风动和建筑模块定型后重跑 `benchmark:graphics`。
+
 ## 样例硬件绘制
 
 `npm run benchmark:graphics`：111 个虚构文件、10 个目录，窗口 1200×800，实际画布 736×627 CSS 像素；新应用缓存，系统缓存未控制。ANGLE D3D11 确认 RTX 4060 硬件绘制，180 帧交替缩放，32 次绘制调用、10,920 三角形。
@@ -58,6 +60,36 @@
 这是一条当前候选、明确条件下的 1 万项硬件记录；它不证明 10 万项桌面绘制、冷缓存、另一 GPU 或整个首版性能通过。
 
 监听的 12 次 fallback/重新启用循环历史用例与 20 秒预跑均通过；预跑实际 34.649 秒，覆盖 270 目录 fallback、变更、暂停/取消、离线恢复和停止释放。24 小时耐久已开始但尚未完成，内存、句柄、脏队列和收敛 checkpoint 仍待完整审阅，不能折算为 24 小时通过。
+
+## 2026-09-13 写实材质城市鸟瞰：图形测量与未完成复测
+
+开发态 `CityRenderer` 改为共享的项目内程序化 PBR 材质和高密度道路/建筑构图。软件离屏 smoke 的当前源码记录为 40 次绘制调用、8,024 个三角形、8 个可见对象、33 张 128×128 纹理（约 2.06 MiB 原始 RGBA 像素预算）；这是资源预算与回归检查，`software-offscreen` 不代表实际 GPU 帧时间。
+
+在道路最终微调前，同一 PBR 材质与模块化建筑架构曾执行 `.artifacts/graphics-benchmark-SnYnmn/benchmark.json`：Windows 11 build 22631、i7-14650HX、约 16 GiB、RTX 4060 Laptop，ANGLE D3D11 硬件绘制，1186×682 CSS 画布，113 个虚构文件/10 个目录，新应用缓存、系统缓存未控制。记录为首场景 270.4 ms、rAF P50/P95/最大 6.1/6.5/180.8 ms、40 次绘制调用、7,832 个三角形、33 张纹理、每 50 ms 采样的全应用峰值工作集 457,028 KB。图形上下文丢失/恢复、构造失败、两种失败时的列表导航和重新加载恢复在该次运行完成；最大帧间隔仍是卡顿证据，不能只根据 P95 宣称全程流畅。
+
+道路最终微调后的当前源码最初两次运行 `npm.cmd run benchmark:graphics`，分别在 `.artifacts/graphics-benchmark-JKsqSo/` 和 `.artifacts/graphics-benchmark-BwpiCh/` 中没有写出 `benchmark.json`。两次均仅在核对 Electron 主进程命令行和隔离 root 后停止了本轮自有测试主进程；artifact 保留。已定位为基准第一次 context restore 后继续使用旧 context 的 `WEBGL_lose_context` 扩展对象。修复为每次恢复后重新获取活动 canvas/context，并写入 `benchmark-progress.json` 以保留阶段证据；不改变应用的 sandbox、硬件加速或渲染器安全设置。
+
+修复后的最终源码在 `.artifacts/graphics-benchmark-V6RI5y/benchmark.json` 完成相同硬件测试：首场景 338.9 ms、rAF P50/P95/最大 6.1/6.4/161.2 ms、40 次绘制调用、8,024 个三角形、33 张纹理、峰值工作集 450,048 KB；硬件 GPU compositing 和 WebGL 均为 enabled，真实 context loss/restore、构造失败、故障期间列表导航与恢复完成，阶段 artifact 为 `complete`。161.2 ms 最大间隔仍是卡顿证据，不能把该次结果描述为全程流畅或替代 1 万/10 万真实目录硬件验收。
+
+## 2026-09-13 城市取景与环境动态复测
+
+当前源码在 `.artifacts/graphics-benchmark-24muPB/benchmark.json` 以 Windows 11 build 22631、i7-14650HX、约 16 GiB、RTX 4060 Laptop / ANGLE D3D11、1186×682 CSS 画布、113 文件/10 目录和新隔离 profile 运行。样例为 40 draw calls、14,024 triangles、8 个可见对象、36 张纹理（2,359,296 B 原始 RGBA 像素预算），每 50 ms 采样的全应用峰值工作集为 471,120 KB。开启树木轻摆时采样 rAF P50/P95/最大为 6.1/6.4/261.2 ms；关闭时为 6.1/6.4/6.9 ms。采样期间包含缩放交互，所以 rAF 中位数不能解释为静态环境调度已达到 30 fps；261.2 ms 是必须保留的长帧证据。30 fps 只是环境装饰调度目标，尚未作为通过门槛或性能结论。
+
+该次已验证硬件 GPU compositing/WebGL 为 enabled，`environmentMotion` 开关、实例树木计数、总览/探索边界、context loss/restore、构造失败和列表回退均完成；它不是 1 万/10 万真实目录绘制验收，也不替代用户主观相机与动态观感评审。
+
+## 2026-09-13 植被分层风动复测
+
+植被重做后的第一轮 `.artifacts/graphics-benchmark-UnSt5g/benchmark.json` 不可作为性能结果：隔离基准窗口仍受 Chromium 后台节流，首场景 40,955.3 ms、最大 rAF 间隔 324,665.9 ms、峰值工作集 520,452 KB。该 artifact 保留为测试运行管理缺陷证据；修复只对隔离 benchmark/capture 窗口禁用后台节流，普通应用继续在不可见时暂停或降低绘制，不能把失败数据改写为通过。
+
+有效复测为 `.artifacts/graphics-benchmark-tD7b9o/benchmark.json`：Windows 11 build 22631、i7-14650HX、约 16 GiB、RTX 4060 Laptop / ANGLE D3D11、1186×682 CSS 画布、113 文件/10 目录、新隔离 profile、系统缓存未控制。8 树 / 48 叶簇 / 89 草簇的样例为 51 draw calls、26,231 triangles、48 张纹理（3,145,728 B 原始 RGBA 像素预算），每 50 ms 采样的全应用峰值工作集为 473,264 KB。动态开启 rAF P50/P95/最大为 6.0/6.6/188.5 ms，关闭为 6.1/6.4/7.2 ms；GPU compositing/WebGL、context loss/restore、构造失败和故障时列表回退均完成。与先前 `.artifacts/graphics-benchmark-24muPB/` 的 40 draw calls、14,024 triangles、36 张纹理和 471,120 KB 比较，植被当前增加 11 draw calls、12,207 triangles、12 张纹理和约 2,144 KB 峰值工作集；运行批次不同，此差异是预算观察而非严格可归因的性能比较。
+
+188.5 ms 仍是必须保留的长帧，且测试包含交互；不能用较低 P50/P95 宣称全程流畅、已达到 30 fps 环境预算或完成真实大目录硬件验收。软件离屏和连续 PNG 只用于画面/交互检查，不能替代上述硬件记录或用户主观验收。
+
+## 2026-09-14 岛屿、海岸与水面复测
+
+当前开发源码的 `.artifacts/graphics-benchmark-oi2tvA/benchmark.json` 在 Windows 11 build 22631、i7-14650HX、RTX 4060 Laptop / ANGLE D3D11、1186×682 CSS 画布、113 个样例文件/10 个目录、新隔离 profile、系统缓存未控制条件下完成。水面使用单一 56×56 网格的着色波纹，不创建实时反射目标；场景为 68 draw calls、22,720 triangles、39 张程序化贴图（2,555,904 B 原始 RGBA 预算）、峰值全应用工作集 783,416 KB。首场景 506.9 ms；环境动态开启 rAF P50/P95/最大为 6.1/20.1/844.8 ms，关闭为 6.1/6.5/7.0 ms。真实 context loss/restore、构造失败和故障时列表回退仍通过。
+
+844.8 ms 最大间隔和 783,416 KB 峰值是当前必须保留的回归风险；虽环境关闭数据较低，也不能把它解释为动态合格。该批次不是 1 万/10 万真实目录绘制验收，不能替代安装、监听或用户视觉认可。
 
 ## 下一轮建议范围（待实施）
 
