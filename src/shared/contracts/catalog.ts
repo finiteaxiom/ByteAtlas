@@ -135,7 +135,7 @@ export function isSavedView(v: unknown): v is SavedView {
     if (!isRecord(v) || Object.keys(v).some(k => !['directoryId', 'selectedId', 'camera', 'page', 'mode', 'theme'].includes(k)) || !string(v.directoryId) || !nullableId(v.selectedId) || !page(v.page) || !['capacity', 'type', 'activity'].includes(String(v.mode)) || !['warm', 'dusk'].includes(String(v.theme)))
         return false;
     const c = v.camera;
-    return c === undefined || (isRecord(c) && Object.keys(c).length === 3 && ['position', 'target'].every(k => Array.isArray(c[k]) && c[k].length === 3 && c[k].every((n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 100000)) && typeof c.zoom === 'number' && c.zoom >= .45 && c.zoom <= 3.8);
+    return c === undefined || (isRecord(c) && Object.keys(c).length === 3 && ['position', 'target'].every(k => Array.isArray(c[k]) && c[k].length === 3 && c[k].every((n: unknown) => typeof n === 'number' && Number.isFinite(n) && Math.abs(n) < 100000)) && typeof c.zoom === 'number' && c.zoom >= .32 && c.zoom <= 4.1);
 }
 export function isCatalogRequest(v: unknown): v is CatalogRequest {
     if (!isRecord(v) || !string(v.requestId, 100) || typeof v.action !== 'string')
